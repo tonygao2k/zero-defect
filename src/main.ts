@@ -22,9 +22,15 @@ const buildCsp = (dev: boolean) =>
 
 const createWindow = () => {
   const mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 760,
+    width: 1180,
+    height: 780,
+    minWidth: 960,
+    minHeight: 640,
     title: APP_DISPLAY_NAME,
+    // 隐藏标题栏,让红绿灯按钮融进渐变背景。
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 20, y: 20 },
+    backgroundColor: '#0a4a35',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,

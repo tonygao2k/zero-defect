@@ -13,7 +13,7 @@ const NATIVE_RUNTIME_MODULES = ['better-sqlite3'];
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    name: '错题消消乐',
+    name: '超级错题本',
     appBundleId: 'com.zerodefect.app',
   },
   rebuildConfig: {},
