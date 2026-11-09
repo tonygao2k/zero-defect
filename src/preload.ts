@@ -1,3 +1,11 @@
-// oxlint-disable eslint-plugin-unicorn/no-empty-file
-// See the Electron documentation for details on how to use preload scripts:
-// https://www.electronjs.org/docs/latest/tutorial/process-model#preload-scripts
+import { contextBridge, ipcRenderer } from 'electron';
+import { IPC, type Api } from './shared/ipc';
+
+// 只暴露白名单里的明确接口,渲染进程拿不到 ipcRenderer 本身。
+const api: Api = {
+  getAppVersion: () => ipcRenderer.invoke(IPC.getAppVersion),
+  checkForUpdate: () => ipcRenderer.invoke(IPC.checkForUpdate),
+  openReleasePage: () => ipcRenderer.invoke(IPC.openReleasePage),
+};
+
+contextBridge.exposeInMainWorld('api', api);

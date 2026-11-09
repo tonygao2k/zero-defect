@@ -13,6 +13,7 @@ import {
   StarIcon,
 } from './components/Icons';
 import { Hero } from './components/Hero';
+import { ParentPage } from './pages/ParentPage';
 
 type PageId = 'home' | 'upload' | 'practice' | 'mistakes' | 'parent';
 
@@ -161,6 +162,8 @@ export function App() {
         <div className="absolute inset-x-0 top-0 h-10 [-webkit-app-region:drag]" />
         {page === 'home' ? (
           <HomePage onNavigate={setPage} />
+        ) : page === 'parent' ? (
+          <ParentPage />
         ) : (
           <PlaceholderPage title={TITLES[page]} />
         )}

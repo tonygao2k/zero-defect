@@ -1,6 +1,7 @@
 import { app, BrowserWindow, session } from 'electron';
 import path from 'node:path';
 import { APP_DISPLAY_NAME } from './shared/app-info';
+import { registerIpc } from './main/ipc';
 
 const isDev = Boolean(MAIN_WINDOW_VITE_DEV_SERVER_URL);
 
@@ -67,6 +68,7 @@ app.whenReady().then(() => {
     });
   });
 
+  registerIpc();
   createWindow();
 
   app.on('activate', () => {
