@@ -14,6 +14,7 @@ import {
 } from './components/Icons';
 import { Hero } from './components/Hero';
 import { ParentPage } from './pages/ParentPage';
+import { UploadPage } from './pages/UploadPage';
 
 type PageId = 'home' | 'upload' | 'practice' | 'mistakes' | 'parent';
 
@@ -164,6 +165,8 @@ export function App() {
           <HomePage onNavigate={setPage} />
         ) : page === 'parent' ? (
           <ParentPage />
+        ) : page === 'upload' ? (
+          <UploadPage />
         ) : (
           <PlaceholderPage title={TITLES[page]} />
         )}

@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { SCHEMA_V1 } from './schema';
+import { SCHEMA_V3 } from './schema-v3';
 import {
   CURRICULUM_SEEDS,
   GENERIC_KNOWLEDGE_POINTS,
@@ -7,7 +8,12 @@ import {
   ROOT_CAUSE_SEEDS,
 } from './seed';
 
-type Migration = { version: number; up: (db: Database.Database) => void };
+type Migration = {
+  version: number;
+  /** 需要重建被其他表引用的表时设为 true:迁移期间临时关闭外键,提交前做完整性检查。 */
+  foreignKeysOff?: boolean;
+  up: (db: Database.Database) => void;
+};
 
 const MIGRATIONS: Migration[] = [
   {
@@ -47,6 +53,13 @@ const MIGRATIONS: Migration[] = [
       });
     },
   },
+  {
+    version: 3,
+    foreignKeysOff: true,
+    up: (db) => {
+      db.exec(SCHEMA_V3);
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
@@ -64,13 +77,17 @@ export function currentVersion(db: Database.Database): number {
 /**
  * 依次执行未执行的迁移,每个迁移在独立事务里,失败整体回滚。
  * `beforeUpgrade` 在确有待执行迁移、且不是全新数据库时调用,用来备份文件。
+ * `targetVersion` 只在测试里用来停在某个旧版本。
  */
 export function migrate(
   db: Database.Database,
   beforeUpgrade?: (fromVersion: number) => void,
+  targetVersion: number = LATEST_VERSION,
 ): void {
   const from = currentVersion(db);
-  const pending = MIGRATIONS.filter((m) => m.version > from);
+  const pending = MIGRATIONS.filter(
+    (m) => m.version > from && m.version <= targetVersion,
+  );
   if (pending.length === 0) return;
   if (from > 0) beforeUpgrade?.(from);
 
@@ -78,9 +95,23 @@ export function migrate(
     'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)',
   );
   for (const m of pending) {
-    db.transaction(() => {
-      m.up(db);
-      record.run(m.version, new Date().toISOString());
-    })();
+    // PRAGMA foreign_keys 在事务内无效,必须在事务外切换。
+    const restoreForeignKeys =
+      m.foreignKeysOff && db.pragma('foreign_keys', { simple: true }) === 1;
+    if (m.foreignKeysOff) db.pragma('foreign_keys = OFF');
+    try {
+      db.transaction(() => {
+        m.up(db);
+        if (m.foreignKeysOff) {
+          const violations = db.pragma('foreign_key_check') as unknown[];
+          if (violations.length > 0) {
+            throw new Error(`迁移 ${m.version} 后外键检查未通过,已回滚`);
+          }
+        }
+        record.run(m.version, new Date().toISOString());
+      })();
+    } finally {
+      if (restoreForeignKeys) db.pragma('foreign_keys = ON');
+    }
   }
 }

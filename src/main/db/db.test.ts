@@ -67,7 +67,7 @@ describe('database migrations', () => {
     // 模拟旧版本:删掉 v2 记录和种子数据,再重新打开应触发备份并重新迁移。
     const raw = openDatabase(file);
     raw.exec(
-      'DELETE FROM schema_migrations WHERE version = 2; DELETE FROM curriculum_knowledge_points; DELETE FROM knowledge_points; DELETE FROM curricula; DELETE FROM root_causes;',
+      'DELETE FROM schema_migrations WHERE version >= 2; DELETE FROM curriculum_knowledge_points; DELETE FROM knowledge_points; DELETE FROM curricula; DELETE FROM root_causes;',
     );
     raw.close();
 

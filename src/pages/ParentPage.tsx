@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AiSettings } from '../components/AiSettings';
 import type { UpdateCheckResult } from '../shared/ipc';
 
 type CheckState =
@@ -39,6 +40,8 @@ export function ParentPage() {
   return (
     <div className="h-full overflow-y-auto px-12 pb-10 pt-16">
       <h1 className="text-4xl font-semibold">家长入口</h1>
+
+      <AiSettings />
 
       <section className="mt-8 max-w-xl rounded-3xl bg-white/10 p-6 ring-1 ring-white/15">
         <h2 className="text-lg font-semibold">关于</h2>
