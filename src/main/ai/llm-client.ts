@@ -17,7 +17,8 @@ export type LlmErrorKind =
   | 'bad_request' // 其他 4xx
   | 'network'
   | 'timeout'
-  | 'empty'; // 200 但没有内容
+  | 'empty' // 200 但没有内容
+  | 'truncated'; // 输出达到长度上限被截断,重试也一样
 
 export class LlmError extends Error {
   constructor(
@@ -51,7 +52,11 @@ export type ChatOptions = {
   maxRetries?: number;
   timeoutMs?: number;
   maxTokens?: number;
+  /** 每次成功返回后调用,用来记录 token 用量(成本核算)。 */
+  onUsage?: (usage: LlmUsage) => void;
 };
+
+export type LlmUsage = { promptTokens: number; completionTokens: number };
 
 /**
  * 单次输出上限。推理模型的思考内容通常也计入输出,这里留得比较宽。
@@ -75,25 +80,27 @@ function classify(status: number): LlmErrorKind {
 function messageFor(kind: LlmErrorKind, provider: string): string {
   switch (kind) {
     case 'auth':
-      return `${provider}不认这个 API Key,请在家长入口检查`;
+      return `${provider}不认这个 API Key,请在设置里检查`;
     case 'forbidden':
       return `${provider}拒绝了这次请求`;
     case 'credits':
       return `${provider}账户余额不足,请充值后再试`;
     case 'not_found':
-      return `${provider}找不到所选模型,请在家长入口换一个模型`;
+      return `${provider}找不到所需的模型,请确认百炼账号已开通`;
     case 'rate_limit':
       return `${provider}提示请求太频繁,请稍后再试`;
     case 'server':
       return `${provider}暂时出了问题,请稍后再试`;
     case 'bad_request':
-      return `${provider}拒绝了这次请求,请检查模型设置`;
+      return `${provider}拒绝了这次请求,请稍后重试`;
     case 'network':
       return `无法连接到${provider},请检查网络`;
     case 'timeout':
       return `${provider}响应太慢,请稍后再试`;
     case 'empty':
       return `${provider}没有返回内容,请重试`;
+    case 'truncated':
+      return `这份试卷的题太多,${provider}一次说不完。请把试卷分成两次提交`;
   }
 }
 
@@ -178,6 +185,23 @@ async function request(opts: ChatOptions): Promise<unknown> {
 
 async function attempt(opts: ChatOptions): Promise<string> {
   const body = await request(opts);
+  const usage = (
+    body as { usage?: { prompt_tokens?: number; completion_tokens?: number } }
+  )?.usage;
+  if (usage && opts.onUsage) {
+    opts.onUsage({
+      promptTokens: Number(usage.prompt_tokens) || 0,
+      completionTokens: Number(usage.completion_tokens) || 0,
+    });
+  }
+  const finish = (body as { choices?: { finish_reason?: unknown }[] })
+    ?.choices?.[0]?.finish_reason;
+  if (finish === 'length') {
+    throw new LlmError(
+      'truncated',
+      messageFor('truncated', opts.providerLabel),
+    );
+  }
   const text = contentOf(body).trim();
   if (!text)
     throw new LlmError('empty', messageFor('empty', opts.providerLabel));

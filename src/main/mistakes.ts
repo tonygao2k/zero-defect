@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import type { AnalysisResult } from '../shared/analysis';
 import type {
+  BatchConfirmResult,
   ConfirmMistakeInput,
   EditableFields,
   MistakeStatus,
@@ -15,33 +16,34 @@ import {
 export type CauseRow = { code: string; label: string; description: string };
 
 export type DraftInput = {
-  imagePath: string;
-  imageHash: string;
-  /** 去重键:图片哈希 + 补充说明。同一次分析产生的多道题共用同一个键。 */
-  analysisKey: string;
+  paperId: string;
+  /** 这道题所在的页(可能不止一页,如跨页题),按页序。 */
+  pageIds: string[];
   analysis: AnalysisResult;
   grade: number;
+  semester: number;
   curriculumId: string;
+};
+
+export type MistakeDetailRow = {
+  id: string;
+  status: MistakeStatus;
+  paperId: string | null;
+  paperTitle: string | null;
+  incomplete: boolean;
+  /** 这道题涉及的页的图片路径,按页序。 */
+  imagePaths: string[];
+  fields: Omit<EditableFields, 'mistakeId'>;
+  analysis: AnalysisResult | null;
 };
 
 const now = () => new Date().toISOString();
 
+/** 待确认 = 草稿,以及旧版本留下的“跳过了原因”。 */
+const PENDING = "('draft','unattributed')";
+
 export class MistakeRepo {
   constructor(readonly db: Database.Database) {}
-
-  /** 同一次分析(同图同说明)产生的所有错题,按创建顺序。 */
-  findByAnalysisKey(key: string): { id: string; status: MistakeStatus }[] {
-    return this.db
-      .prepare(
-        'SELECT id, status FROM mistakes WHERE analysis_key = ? ORDER BY created_at, rowid',
-      )
-      .all(key) as { id: string; status: MistakeStatus }[];
-  }
-
-  /** 一次分析出多道题时整体落库:要么全部成功,要么全部不写。 */
-  createDrafts(inputs: DraftInput[]): string[] {
-    return this.db.transaction(() => inputs.map((i) => this.createDraft(i)))();
-  }
 
   listActiveCauses(): CauseRow[] {
     return this.db
@@ -58,7 +60,11 @@ export class MistakeRepo {
     return listKnowledgePointsFor(this.db, curriculumId, grade);
   }
 
-  /** AI 分析完成后立即落库为草稿,家长确认前崩溃也能恢复(设计文档 3.2)。 */
+  /** 一份试卷识别出的所有错题整体落库:要么全部成功,要么全部不写。 */
+  createDrafts(inputs: DraftInput[]): string[] {
+    return this.db.transaction(() => inputs.map((i) => this.createDraft(i)))();
+  }
+
   createDraft(input: DraftInput): string {
     const id = crypto.randomUUID();
     const a = input.analysis;
@@ -66,35 +72,37 @@ export class MistakeRepo {
       .prepare('SELECT id FROM knowledge_points WHERE code = ?')
       .get(a.knowledgePointCode) as { id: string } | undefined;
     const t = now();
-    this.db.transaction(() => {
-      this.db
-        .prepare(
-          `INSERT INTO mistakes (id, image_path, image_hash, analysis_key, question_markdown, student_answer, student_work_markdown,
-             correct_answer, grade, subject, curriculum_id, knowledge_point_id, analysis_json, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'math', ?, ?, ?, 'draft', ?, ?)`,
-        )
-        .run(
-          id,
-          input.imagePath,
-          input.imageHash,
-          input.analysisKey,
-          a.questionMarkdown,
-          a.studentAnswer,
-          a.studentWorkMarkdown,
-          a.correctAnswer,
-          input.grade,
-          input.curriculumId,
-          kp?.id ?? null,
-          JSON.stringify(a),
-          t,
-          t,
-        );
-      const insertCause = this.db.prepare(
-        'INSERT INTO mistake_root_causes (mistake_id, root_cause_id, confidence, evidence, confirmed, is_primary) VALUES (?, ?, ?, ?, 0, 0)',
+    this.db
+      .prepare(
+        `INSERT INTO mistakes (id, paper_id, question_markdown, student_answer, student_work_markdown, correct_answer,
+           grade, semester, subject, curriculum_id, knowledge_point_id, analysis_json, status, incomplete, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'math', ?, ?, ?, 'draft', ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.paperId,
+        a.questionMarkdown,
+        a.studentAnswer,
+        a.studentWorkMarkdown,
+        a.correctAnswer,
+        input.grade,
+        input.semester,
+        input.curriculumId,
+        kp?.id ?? null,
+        JSON.stringify(a),
+        a.incomplete ? 1 : 0,
+        t,
+        t,
       );
-      for (const c of a.rootCauses)
-        insertCause.run(id, c.code, c.confidence, c.evidence);
-    })();
+    const link = this.db.prepare(
+      'INSERT INTO mistake_pages (mistake_id, page_id, position) VALUES (?, ?, ?)',
+    );
+    input.pageIds.forEach((pageId, i) => link.run(id, pageId, i));
+    const insertCause = this.db.prepare(
+      'INSERT INTO mistake_root_causes (mistake_id, root_cause_id, confidence, evidence, confirmed, is_primary) VALUES (?, ?, ?, ?, 0, 0)',
+    );
+    for (const c of a.rootCauses)
+      insertCause.run(id, c.code, c.confidence, c.evidence);
     return id;
   }
 
@@ -122,18 +130,11 @@ export class MistakeRepo {
       );
   }
 
-  private requireMistake(
-    id: string,
-    allowed: MistakeStatus[],
-  ): { image_path: string | null; status: MistakeStatus } {
+  private requireMistake(id: string): { status: MistakeStatus } {
     const row = this.db
-      .prepare('SELECT image_path, status FROM mistakes WHERE id = ?')
-      .get(id) as
-      | { image_path: string | null; status: MistakeStatus }
-      | undefined;
+      .prepare('SELECT status FROM mistakes WHERE id = ?')
+      .get(id) as { status: MistakeStatus } | undefined;
     if (!row) throw new Error('找不到这道错题');
-    if (!allowed.includes(row.status))
-      throw new Error('这道错题当前状态不能执行此操作');
     return row;
   }
 
@@ -145,31 +146,12 @@ export class MistakeRepo {
     return kp.id;
   }
 
-  private updateFields(
-    f: EditableFields,
-    kpId: string,
-    status: MistakeStatus,
-  ): void {
-    this.db
-      .prepare(
-        `UPDATE mistakes SET question_markdown = ?, student_answer = ?, student_work_markdown = ?, correct_answer = ?,
-           knowledge_point_id = ?, status = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(
-        f.questionMarkdown,
-        f.studentAnswer,
-        f.studentWorkMarkdown,
-        f.correctAnswer,
-        kpId,
-        status,
-        now(),
-        f.mistakeId,
-      );
-  }
-
-  /** 家长确认:保存修改、标记主归因,并创建或重置对应的掌握度条目(设计文档第 10 节)。 */
+  /**
+   * 家长确认:保存修改并标记主要原因。已确认的错题也可以再次确认(修改后重新保存)。
+   * 掌握情况由作答记录推算(见 mastery.ts),这里不再单独写掌握度表。
+   */
   confirm(input: ConfirmMistakeInput): void {
-    this.requireMistake(input.mistakeId, ['draft', 'unattributed']);
+    this.requireMistake(input.mistakeId);
     const cause = this.db
       .prepare('SELECT id, active FROM root_causes WHERE code = ?')
       .get(input.rootCauseCode) as { id: string; active: number } | undefined;
@@ -179,7 +161,20 @@ export class MistakeRepo {
     const kpId = this.kpId(input.knowledgePointCode);
 
     this.db.transaction(() => {
-      this.updateFields(input, kpId, 'active');
+      this.db
+        .prepare(
+          `UPDATE mistakes SET question_markdown = ?, student_answer = ?, student_work_markdown = ?, correct_answer = ?,
+             knowledge_point_id = ?, status = 'active', updated_at = ? WHERE id = ?`,
+        )
+        .run(
+          input.questionMarkdown,
+          input.studentAnswer,
+          input.studentWorkMarkdown,
+          input.correctAnswer,
+          kpId,
+          now(),
+          input.mistakeId,
+        );
       this.db
         .prepare(
           'UPDATE mistake_root_causes SET is_primary = 0 WHERE mistake_id = ?',
@@ -192,68 +187,102 @@ export class MistakeRepo {
            ON CONFLICT (mistake_id, root_cause_id) DO UPDATE SET confirmed = 1, is_primary = 1`,
         )
         .run(input.mistakeId, cause.id);
-      // 新条目 score = 1.0;已有条目说明孩子又在这个点上出错:回到 active、清零连对和复习等级,score 至少为 1.0。
+    })();
+  }
+
+  /**
+   * 整份试卷批量确认:对每道待确认的题采用 AI 推荐的原因和知识点。
+   * 没有推荐原因、知识点未确定(other)或题目不完整的跳过,留给家长逐题核对。
+   */
+  confirmAllInPaper(paperId: string): BatchConfirmResult {
+    const ids = this.db
+      .prepare(
+        `SELECT id FROM mistakes WHERE paper_id = ? AND status IN ${PENDING}`,
+      )
+      .all(paperId) as { id: string }[];
+    const result: BatchConfirmResult = { confirmed: 0, skipped: 0 };
+    for (const { id } of ids) {
+      if (this.confirmRecommended(id)) result.confirmed++;
+      else result.skipped++;
+    }
+    return result;
+  }
+
+  /**
+   * 直接采用 AI 推荐的原因和知识点确认这道题。
+   * 返回 false 表示信息不够(没有推荐原因、知识点未确定、题目不完整),什么都没改,需要家长打开详情页补充。
+   */
+  confirmRecommended(id: string): boolean {
+    const row = this.db
+      .prepare(
+        'SELECT analysis_json AS aj, incomplete FROM mistakes WHERE id = ?',
+      )
+      .get(id) as { aj: string | null; incomplete: number } | undefined;
+    if (!row) throw new Error('找不到这道错题');
+    let a: AnalysisResult | null = null;
+    try {
+      a = row.aj ? (JSON.parse(row.aj) as AnalysisResult) : null;
+    } catch {
+      a = null;
+    }
+    if (
+      !a ||
+      row.incomplete ||
+      !a.recommendedRootCause ||
+      a.knowledgePointCode === 'other'
+    )
+      return false;
+    try {
+      this.confirm({
+        mistakeId: id,
+        questionMarkdown: a.questionMarkdown,
+        studentAnswer: a.studentAnswer,
+        studentWorkMarkdown: a.studentWorkMarkdown,
+        correctAnswer: a.correctAnswer,
+        knowledgePointCode: a.knowledgePointCode,
+        rootCauseCode: a.recommendedRootCause,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 删除一道错题(待确认或已确认都可以)。图片属于试卷,不随错题删除。 */
+  delete(id: string): void {
+    this.requireMistake(id);
+    this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO mastery (root_cause_id, knowledge_point_id) VALUES (?, ?)
-           ON CONFLICT (root_cause_id, knowledge_point_id) DO UPDATE SET
-             status = 'active', review_level = 0, consecutive_correct = 0, next_review_at = NULL,
-             score = MAX(score, 1.0)`,
+          'UPDATE practice_questions SET source_mistake_id = NULL WHERE source_mistake_id = ?',
         )
-        .run(cause.id, kpId);
-    })();
-  }
-
-  /** 跳过归因:保存修改,状态为 unattributed,不写归因关联,不进入练习调度。 */
-  skip(input: EditableFields): void {
-    this.requireMistake(input.mistakeId, ['draft', 'unattributed']);
-    const kpId = this.kpId(input.knowledgePointCode);
-    this.db.transaction(() => {
-      this.updateFields(input, kpId, 'unattributed');
-      this.db
-        .prepare('DELETE FROM mistake_root_causes WHERE mistake_id = ?')
-        .run(input.mistakeId);
-    })();
-  }
-
-  /** 放弃草稿:删除记录并返回图片路径,由调用方删除图片,使同一张图可以重新上传。 */
-  discardDraft(id: string): string | null {
-    const row = this.requireMistake(id, ['draft']);
-    this.db.transaction(() => {
+        .run(id);
       this.db
         .prepare('DELETE FROM mistake_root_causes WHERE mistake_id = ?')
         .run(id);
       this.db.prepare('DELETE FROM mistakes WHERE id = ?').run(id);
     })();
-    // 同一次分析的多道题共用一张图片:还有别的错题在用时,不能让调用方删除它。
-    if (!row.image_path) return null;
-    const stillUsed = this.db
-      .prepare('SELECT 1 FROM mistakes WHERE image_path = ? LIMIT 1')
-      .get(row.image_path);
-    return stillUsed ? null : row.image_path;
   }
 
-  /** 确认页用:当前字段、状态、图片路径和保存下来的 AI 分析结果。 */
-  getDetail(id: string): {
-    id: string;
-    status: MistakeStatus;
-    imagePath: string | null;
-    fields: Omit<EditableFields, 'mistakeId'>;
-    analysis: AnalysisResult | null;
-  } {
+  /** 详情页用:当前字段、状态、所在页的图片路径和保存下来的 AI 分析结果。 */
+  getDetail(id: string): MistakeDetailRow {
     const row = this.db
       .prepare(
-        `SELECT m.id, m.status, m.image_path AS imagePath, m.question_markdown AS q, m.student_answer AS sa,
-                m.student_work_markdown AS sw, m.correct_answer AS ca, m.analysis_json AS aj,
-                kp.code AS kpCode
-         FROM mistakes m LEFT JOIN knowledge_points kp ON kp.id = m.knowledge_point_id
+        `SELECT m.id, m.status, m.paper_id AS paperId, p.title AS paperTitle, m.incomplete,
+                m.question_markdown AS q, m.student_answer AS sa, m.student_work_markdown AS sw,
+                m.correct_answer AS ca, m.analysis_json AS aj, kp.code AS kpCode
+         FROM mistakes m
+         LEFT JOIN knowledge_points kp ON kp.id = m.knowledge_point_id
+         LEFT JOIN papers p ON p.id = m.paper_id
          WHERE m.id = ?`,
       )
       .get(id) as
       | {
           id: string;
           status: MistakeStatus;
-          imagePath: string | null;
+          paperId: string | null;
+          paperTitle: string | null;
+          incomplete: number;
           q: string;
           sa: string | null;
           sw: string | null;
@@ -269,10 +298,22 @@ export class MistakeRepo {
     } catch {
       analysis = null;
     }
+    const imagePaths = (
+      this.db
+        .prepare(
+          `SELECT pg.image_path AS imagePath FROM mistake_pages mp
+           JOIN paper_pages pg ON pg.id = mp.page_id
+           WHERE mp.mistake_id = ? ORDER BY pg.position`,
+        )
+        .all(id) as { imagePath: string }[]
+    ).map((r) => r.imagePath);
     return {
       id: row.id,
       status: row.status,
-      imagePath: row.imagePath,
+      paperId: row.paperId,
+      paperTitle: row.paperTitle,
+      incomplete: row.incomplete === 1,
+      imagePaths,
       fields: {
         questionMarkdown: row.q,
         studentAnswer: row.sa ?? '',
@@ -284,18 +325,51 @@ export class MistakeRepo {
     };
   }
 
-  list(status?: MistakeStatus): MistakeSummary[] {
+  list(filter: {
+    status?: 'pending' | 'confirmed';
+    paperId?: string;
+  }): MistakeSummary[] {
+    const where: string[] = [];
+    const args: string[] = [];
+    if (filter.status === 'pending') where.push(`m.status IN ${PENDING}`);
+    if (filter.status === 'confirmed') where.push("m.status = 'active'");
+    if (filter.paperId) {
+      where.push('m.paper_id = ?');
+      args.push(filter.paperId);
+    }
     const rows = this.db
       .prepare(
-        `SELECT m.id, m.status, m.question_markdown AS questionMarkdown, m.created_at AS createdAt,
+        `SELECT m.id, m.status, m.paper_id AS paperId, m.question_markdown AS questionMarkdown,
+                m.incomplete, m.analysis_json AS aj, m.created_at AS createdAt,
                 kp.label AS knowledgePointLabel,
                 (SELECT rc.label FROM mistake_root_causes mrc JOIN root_causes rc ON rc.id = mrc.root_cause_id
                   WHERE mrc.mistake_id = m.id AND mrc.is_primary = 1) AS primaryRootCauseLabel
          FROM mistakes m LEFT JOIN knowledge_points kp ON kp.id = m.knowledge_point_id
-         WHERE (? IS NULL OR m.status = ?)
-         ORDER BY m.created_at DESC`,
+         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+         ORDER BY m.created_at, m.rowid`,
       )
-      .all(status ?? null, status ?? null);
-    return rows as MistakeSummary[];
+      .all(...args) as (Omit<
+      MistakeSummary,
+      'incomplete' | 'needsAttention'
+    > & {
+      incomplete: number;
+      aj: string | null;
+    })[];
+    return rows.map(({ aj, incomplete, ...rest }) => ({
+      ...rest,
+      incomplete: incomplete === 1,
+      needsAttention: needsAttention(rest.status, aj),
+    }));
+  }
+}
+
+/** 待确认且 AI 提示过风险(把握低、缺过程、没确定知识点等)的题,在列表里标出来。 */
+function needsAttention(status: MistakeStatus, aj: string | null): boolean {
+  if (status === 'active' || !aj) return false;
+  try {
+    const a = JSON.parse(aj) as AnalysisResult;
+    return a.warnings.length > 0;
+  } catch {
+    return false;
   }
 }

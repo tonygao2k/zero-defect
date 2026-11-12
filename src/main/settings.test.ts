@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SettingsStore } from './settings';
-import { ApiKeyStore, type Encryptor } from './secrets';
+import Database from 'better-sqlite3';
+import { ApiKeyStore } from './api-key';
+import { openDatabase, scrubSecrets } from './db/open';
+import { migrate } from './db/migrate';
 import { DEFAULT_SETTINGS } from '../shared/settings';
 
 let dir: string;
@@ -23,15 +26,20 @@ describe('SettingsStore', () => {
 
   it('round-trips saved settings', () => {
     const store = new SettingsStore(path.join(dir, 's.json'));
-    store.save({
-      ...DEFAULT_SETTINGS,
-      grade: 5,
-      provider: 'qwen',
-      model: 'qwen3-vl-plus',
-    });
+    store.save({ ...DEFAULT_SETTINGS, grade: 5, semester: 2 });
     expect(store.load().grade).toBe(5);
-    expect(store.load().provider).toBe('qwen');
-    expect(store.load().model).toBe('qwen3-vl-plus');
+    expect(store.load().semester).toBe(2);
+  });
+
+  it('ignores retired fields from old settings files', () => {
+    const file = path.join(dir, 's.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ grade: 4, provider: 'kimi', model: 'x' }),
+    );
+    const loaded = new SettingsStore(file).load();
+    expect(loaded.grade).toBe(4);
+    expect(loaded).not.toHaveProperty('provider');
   });
 
   it('falls back to defaults on a corrupted file', () => {
@@ -45,63 +53,57 @@ describe('SettingsStore', () => {
     const store = new SettingsStore(file);
     store.save({ ...DEFAULT_SETTINGS, grade: 4 });
     expect(() => store.save({ ...DEFAULT_SETTINGS, grade: 9 })).toThrow();
-    expect(() =>
-      store.save({ ...DEFAULT_SETTINGS, dailyQuestionCount: 10 }),
-    ).toThrow();
     expect(store.load().grade).toBe(4);
   });
 });
 
-// 假加密:只做可逆变换,用来验证落盘内容里没有明文。
-const fakeEncryptor = (available = true): Encryptor => ({
-  isAvailable: () => available,
-  encrypt: (plain) => Buffer.from(plain, 'utf8').reverse(),
-  decrypt: (data) => Buffer.from(data).reverse().toString('utf8'),
-});
-
 describe('ApiKeyStore', () => {
-  it('stores the key encrypted and reads it back', () => {
-    const file = path.join(dir, 'key.bin');
-    const store = new ApiKeyStore(file, fakeEncryptor());
-    store.set('  sk-or-secret-123  ');
-    expect(fs.readFileSync(file).toString('utf8')).not.toContain(
-      'sk-or-secret-123',
-    );
-    expect(store.get()).toBe('sk-or-secret-123');
+  it('stores the key in sqlite and reads it back', () => {
+    const store = new ApiKeyStore(openDatabase(':memory:'));
+    expect(store.has()).toBe(false);
+    store.set('  sk-secret-123  ');
+    expect(store.get()).toBe('sk-secret-123');
     expect(store.has()).toBe(true);
   });
 
-  it('refuses to save when the keychain is unavailable, and writes nothing', () => {
-    const file = path.join(dir, 'key.bin');
-    const store = new ApiKeyStore(file, fakeEncryptor(false));
-    expect(() => store.set('sk-or-x')).toThrow(/钥匙串/);
-    expect(fs.existsSync(file)).toBe(false);
+  it('replaces an existing key', () => {
+    const store = new ApiKeyStore(openDatabase(':memory:'));
+    store.set('sk-old');
+    store.set('sk-new');
+    expect(store.get()).toBe('sk-new');
   });
 
   it('clears the key when given an empty string', () => {
-    const file = path.join(dir, 'key.bin');
-    const store = new ApiKeyStore(file, fakeEncryptor());
-    store.set('sk-or-x');
+    const store = new ApiKeyStore(openDatabase(':memory:'));
+    store.set('sk-x');
     store.set('   ');
     expect(store.has()).toBe(false);
-    expect(fs.existsSync(file)).toBe(false);
   });
 
-  it('treats an undecryptable file as not set', () => {
-    const file = path.join(dir, 'key.bin');
-    fs.writeFileSync(file, 'garbage');
-    const broken: Encryptor = {
-      ...fakeEncryptor(),
-      decrypt: () => {
-        throw new Error('bad');
-      },
-    };
-    expect(new ApiKeyStore(file, broken).has()).toBe(false);
+  it('scrubs the key from backup copies, including leftover bytes', () => {
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'zd-bk-'));
+    const file = path.join(dir2, 'app.sqlite');
+    const db = openDatabase(file);
+    new ApiKeyStore(db).set('sk-very-secret-key-0123456789');
+    const backup = path.join(dir2, 'backup.sqlite');
+    db.prepare('VACUUM INTO ?').run(backup);
+    db.close();
+    expect(fs.readFileSync(backup).includes('sk-very-secret-key')).toBe(true);
+
+    scrubSecrets(backup);
+
+    expect(fs.readFileSync(backup).includes('sk-very-secret-key')).toBe(false);
+    const copy = new Database(backup);
+    expect(new ApiKeyStore(copy).has()).toBe(false);
+    copy.close();
   });
 
-  it('writes the key file with owner-only permissions', () => {
-    const file = path.join(dir, 'key.bin');
-    new ApiKeyStore(file, fakeEncryptor()).set('sk-or-x');
-    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  it('tolerates backups of databases that predate app_settings', () => {
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'zd-bk-'));
+    const file = path.join(dir2, 'old.sqlite');
+    const old = new Database(file);
+    migrate(old, undefined, 3);
+    old.close();
+    expect(() => scrubSecrets(file)).not.toThrow();
   });
 });

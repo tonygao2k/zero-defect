@@ -1,10 +1,7 @@
 import { z } from 'zod';
 
-/** 上传时“补充说明”的最大长度,界面输入框和主进程校验共用。 */
-export const HINT_MAX_LENGTH = 300;
-
-/** 一次分析最多处理的题目数,防止整张卷子的成本失控。 */
-export const MAX_QUESTIONS_PER_ANALYSIS = 10;
+/** 一份试卷(最多 6 页)最多处理的错题数,防止成本失控。 */
+export const MAX_QUESTIONS_PER_ANALYSIS = 30;
 
 /**
  * 模型返回的原始结构(设计文档 8.2)。字段尽量宽松:
@@ -19,6 +16,10 @@ export const RawAnalysisSchema = z.object({
   correct_answer: z.string().nullish(),
   knowledge_point_code: z.string().nullish(),
   has_student_work: z.boolean().default(false),
+  /** 这道题出现在第几页(从 1 开始);跨页的题列出所有页。 */
+  pages: z.array(z.coerce.number()).nullish(),
+  /** 题干或解题过程在页边被截断,需要补传相邻的页。 */
+  incomplete: z.boolean().nullish(),
   image_quality: z.string().nullish(),
   root_causes: z
     .array(
@@ -83,6 +84,10 @@ export type AnalysisResult = {
   correctAnswer: string;
   knowledgePointCode: string;
   hasStudentWork: boolean;
+  /** 所在页的序号(从 0 开始),已去重排序;空数组表示模型没有说明,调用方按“所有页”处理。 */
+  pages: number[];
+  /** 题目被页边截断,需要家长补传缺页。 */
+  incomplete: boolean;
   /** 按置信度从高到低。 */
   rootCauses: RootCauseCandidate[];
   /** 推荐的主归因;没有可用候选时为 null,需要家长自己选。 */

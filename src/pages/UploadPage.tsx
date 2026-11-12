@@ -1,264 +1,419 @@
-import { useEffect, useState } from 'react';
-import { ConfirmMistake } from '../components/ConfirmMistake';
-import { HINT_MAX_LENGTH } from '../shared/analysis';
+import { useEffect, useRef, useState } from 'react';
+import { Note, Page, Waiting, btn, inputClass } from '../components/ui';
+import { PdfError, renderPdfPages } from '../lib/pdf';
 import type { ImageHandle } from '../shared/ipc';
-import type { MistakeSummary } from '../shared/mistakes';
+import {
+  MAX_PAGES_PER_PAPER,
+  PAPER_TITLE_MAX_LENGTH,
+  defaultPaperTitle,
+  type PaperSummary,
+} from '../shared/papers';
 
 type Step =
-  | { name: 'pick' }
-  | { name: 'preview'; image: ImageHandle }
-  | { name: 'analyzing'; image: ImageHandle }
-  /** 一次分析可能得到多道题,按队列逐道确认。 */
-  | { name: 'confirm'; queue: string[]; index: number };
+  | { name: 'edit' }
+  | { name: 'title' }
+  | { name: 'submitting' }
+  | { name: 'done'; paperId: string; title: string }
+  | { name: 'duplicate'; paperId: string; title: string };
 
-/** 常用说明,点一下填入输入框,可以再手动修改(例如把题号改成实际的)。 */
-const HINT_PRESETS = [
-  '请识别所有错题',
-  '请识别红框内的题目',
-  '请识别第 1、3、5 题',
-  '只识别最后一道大题',
-];
-
-const big =
-  'h-16 rounded-full bg-white/15 px-8 text-lg font-semibold ring-1 ring-white/30 transition hover:bg-white/25 disabled:opacity-50';
-const primary =
-  'h-16 rounded-full bg-gradient-to-b from-[#b6ffd8] to-[#22c97a] px-10 text-lg font-bold text-ink transition active:scale-95 disabled:opacity-50';
-
-export function UploadPage() {
-  const [step, setStep] = useState<Step>({ name: 'pick' });
-  const [notice, setNotice] = useState('');
+export function UploadPage(props: { onOpenLibrary: () => void }) {
+  const [items, setItems] = useState<ImageHandle[]>([]);
+  const [step, setStep] = useState<Step>({ name: 'edit' });
+  const [title, setTitle] = useState('');
+  const [busyText, setBusyText] = useState('');
   const [error, setError] = useState('');
-  const [drafts, setDrafts] = useState<MistakeSummary[]>([]);
-  const [hint, setHint] = useState('');
+  const dragFrom = useRef<number | null>(null);
 
-  useEffect(() => {
-    if (step.name === 'pick')
-      void window.api.listMistakes({ status: 'draft' }).then(setDrafts);
-  }, [step.name]);
+  const full = items.length >= MAX_PAGES_PER_PAPER;
 
-  const reset = (message = '') => {
-    setNotice(message);
-    setHint('');
-    setStep({ name: 'pick' });
+  /** 超出页数上限的图片不收,并释放它们占用的临时文件。 */
+  const accept = async (added: ImageHandle[]) => {
+    const room = MAX_PAGES_PER_PAPER - items.length;
+    const kept = added.slice(0, Math.max(room, 0));
+    for (const extra of added.slice(kept.length))
+      await window.api.discardImage({ imageId: extra.imageId });
+    if (added.length > kept.length) {
+      setError(
+        `一份试卷最多 ${MAX_PAGES_PER_PAPER} 页,多出的图片没有添加,请分次提交`,
+      );
+    }
+    setItems((prev) => [...prev, ...kept]);
   };
 
-  const choose = async (source: 'pick' | 'paste') => {
+  const addFiles = async () => {
     setError('');
-    setNotice('');
-    const res = await (source === 'pick'
-      ? window.api.pickImage()
-      : window.api.pasteImage());
+    const res = await window.api.pickFiles();
     if (!res.ok) return setError(res.error);
-    if (res.value) setStep({ name: 'preview', image: res.value });
+    const handles: ImageHandle[] = [];
+    for (const file of res.value) {
+      if (file.kind === 'image') {
+        handles.push(file.handle);
+        continue;
+      }
+      try {
+        const room = MAX_PAGES_PER_PAPER - items.length - handles.length;
+        setBusyText(`正在转换 ${file.name}…`);
+        const pages = await renderPdfPages(file.bytes, Math.max(room, 0));
+        for (const bytes of pages) {
+          const imported = await window.api.importImage({ bytes });
+          if (!imported.ok) throw new PdfError(imported.error);
+          handles.push(imported.value);
+        }
+      } catch (e) {
+        setBusyText('');
+        for (const h of handles)
+          await window.api.discardImage({ imageId: h.imageId });
+        return setError(
+          e instanceof PdfError ? e.message : 'PDF 转换失败,请换一个文件试试',
+        );
+      }
+    }
+    setBusyText('');
+    await accept(handles);
   };
 
-  const analyze = async (image: ImageHandle) => {
+  const paste = async () => {
     setError('');
-    setStep({ name: 'analyzing', image });
-    const res = await window.api.analyzeMistake({
-      imageId: image.imageId,
-      hint: hint.trim() || undefined,
+    const res = await window.api.pasteImage();
+    if (!res.ok) return setError(res.error);
+    if (res.value) await accept([res.value]);
+  };
+
+  const remove = async (index: number) => {
+    await window.api.discardImage({ imageId: items[index].imageId });
+    setItems(items.filter((_, i) => i !== index));
+    setError('');
+  };
+
+  /** 替换:选一张新图换掉这一页,位置不变。 */
+  const replace = async (index: number) => {
+    setError('');
+    const res = await window.api.pickFiles();
+    if (!res.ok) return setError(res.error);
+    const first = res.value.find((f) => f.kind === 'image');
+    for (const f of res.value)
+      if (f !== first && f.kind === 'image')
+        await window.api.discardImage({ imageId: f.handle.imageId });
+    if (!first || first.kind !== 'image') {
+      if (res.value.length > 0) setError('替换时请选择一张图片');
+      return;
+    }
+    await window.api.discardImage({ imageId: items[index].imageId });
+    setItems(items.map((it, i) => (i === index ? first.handle : it)));
+  };
+
+  const move = (from: number, to: number) => {
+    if (to < 0 || to >= items.length || from === to) return;
+    const next = [...items];
+    next.splice(to, 0, next.splice(from, 1)[0]);
+    setItems(next);
+  };
+
+  const submit = async () => {
+    setError('');
+    setStep({ name: 'submitting' });
+    const res = await window.api.submitPaper({
+      imageIds: items.map((i) => i.imageId),
+      title,
     });
     if (!res.ok) {
       setError(res.error);
-      return setStep({ name: 'preview', image });
+      return setStep({ name: 'title' });
     }
-
-    if (res.value.kind === 'duplicate') {
-      const same = hint.trim() ? '这张图用同样的说明' : '这张图';
-      const { pendingIds } = res.value;
-      if (pendingIds.length > 0) {
-        setNotice(
-          `${same}已经分析过,还有 ${pendingIds.length} 道没确认,继续吧。`,
-        );
-        return setStep({ name: 'confirm', queue: pendingIds, index: 0 });
-      }
-      return reset(
-        `${same}已经分析并确认过了。如果想分析同一张图里的其他题,请换一句说明再试。`,
-      );
-    }
-
-    const { mistakeIds, skipped, ignoredCorrect } = res.value;
-    const notes: string[] = [];
-    if (ignoredCorrect > 0)
-      notes.push(`另有 ${ignoredCorrect} 道题 AI 核对后认为孩子做对了,已忽略`);
-    if (skipped > 0)
-      notes.push(`有 ${skipped} 道错题没能识别完整或超出一次的上限,已跳过`);
-    setNotice(notes.length > 0 ? `${notes.join(';')}。` : '');
-    setStep({ name: 'confirm', queue: mistakeIds, index: 0 });
-  };
-
-  const back = async (image: ImageHandle) => {
-    await window.api.discardImage({ imageId: image.imageId });
-    reset();
-  };
-
-  const onConfirmDone = (message: string) => {
-    if (step.name !== 'confirm') return;
-    if (step.index + 1 < step.queue.length) {
-      setNotice(message);
-      return setStep({ ...step, index: step.index + 1 });
-    }
-    reset(
-      step.queue.length > 1 ? `${message},这张卷子的题都处理完了` : message,
+    setItems([]);
+    setStep(
+      res.value.kind === 'duplicate'
+        ? {
+            name: 'duplicate',
+            paperId: res.value.paperId,
+            title: res.value.title,
+          }
+        : {
+            name: 'done',
+            paperId: res.value.paperId,
+            title: title.trim() || defaultPaperTitle(),
+          },
     );
   };
 
-  return (
-    <div className="h-full overflow-y-auto px-12 pb-10 pt-16">
-      <h1 className="text-4xl font-semibold">上传错题</h1>
+  const reset = () => {
+    setTitle('');
+    setError('');
+    setStep({ name: 'edit' });
+  };
 
-      {step.name === 'pick' && (
-        <div className="mt-8 max-w-xl">
-          <p className="text-white/75">
-            选一张错题或整张卷子的照片。最好能看到孩子的解题过程和批改痕迹,
-            下一步可以告诉 AI 要识别哪些题。
+  const cancelTitle = () => {
+    setError('');
+    setStep({ name: 'edit' });
+  };
+
+  const toTitle = () => {
+    setTitle(defaultPaperTitle());
+    setError('');
+    setStep({ name: 'title' });
+  };
+
+  if (step.name === 'submitting')
+    return (
+      <Page title="上传错题">
+        <Waiting title="正在提交…" fill />
+      </Page>
+    );
+
+  if (step.name === 'done')
+    return (
+      <Page title="上传错题">
+        <Done
+          paperId={step.paperId}
+          title={step.title}
+          onOpenLibrary={props.onOpenLibrary}
+          onMore={reset}
+        />
+      </Page>
+    );
+
+  if (step.name === 'duplicate')
+    return (
+      <Page title="上传错题">
+        <div className="max-w-xl space-y-6">
+          <p className="text-lg">
+            这份试卷已经识别过了,标签是「{step.title}」,没有重复生成。
           </p>
-          <div className="mt-6 flex flex-wrap gap-4">
+          <div className="flex gap-4">
             <button
               type="button"
-              className={primary}
-              onClick={() => choose('pick')}
+              className={btn.primary}
+              onClick={props.onOpenLibrary}
             >
-              选择图片
+              进入错题库
             </button>
-            <button
-              type="button"
-              className={big}
-              onClick={() => choose('paste')}
-            >
-              粘贴截图
+            <button type="button" className={btn.secondary} onClick={reset}>
+              继续上传
             </button>
           </div>
-          {notice && (
-            <p role="status" className="mt-5 text-mint">
-              {notice}
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="mt-5 text-sun">
-              {error}
-            </p>
-          )}
-
-          {drafts.length > 0 && (
-            <section className="mt-10">
-              <h2 className="text-lg font-semibold">还没确认的错题</h2>
-              <ul className="mt-3 space-y-2">
-                {drafts.map((d) => (
-                  <li key={d.id}>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setStep({ name: 'confirm', queue: [d.id], index: 0 })
-                      }
-                      className="w-full truncate rounded-2xl bg-white/10 px-4 py-3 text-left ring-1 ring-white/15 transition hover:bg-white/20"
-                    >
-                      {d.knowledgePointLabel
-                        ? `${d.knowledgePointLabel} · `
-                        : ''}
-                      {d.questionMarkdown.replace(/\s+/g, ' ').slice(0, 40)}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
         </div>
-      )}
+      </Page>
+    );
 
-      {(step.name === 'preview' || step.name === 'analyzing') && (
-        <div className="mt-8 max-w-2xl">
-          <img
-            src={step.image.previewDataUrl}
-            alt="待分析的照片"
-            className="max-h-[50vh] rounded-2xl ring-1 ring-white/20"
-          />
-          <p className="mt-3 text-xs text-white/50">
-            照片会发送给通义千问(阿里云百炼)。请确认没有拍到姓名、学校等个人信息。
+  if (step.name === 'title')
+    return (
+      <Page title="上传错题">
+        <div className="max-w-xl space-y-6">
+          <p className="text-white/75">
+            共 {items.length} 页。给这份试卷起个标签,方便以后在错题库里找。
           </p>
-
-          <div className="mt-5">
-            <label htmlFor="hint" className="mb-2 block text-sm text-white/75">
-              告诉 AI 要识别哪些题(可选,不写就识别所有被批改为错误的题)
-            </label>
-            <div className="mb-3 flex flex-wrap gap-2">
-              {HINT_PRESETS.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  disabled={step.name === 'analyzing'}
-                  onClick={() => setHint(p)}
-                  className="rounded-full bg-white/10 px-4 py-1.5 text-sm ring-1 ring-white/20 transition hover:bg-white/20 disabled:opacity-50"
-                >
-                  {p}
-                </button>
-              ))}
-            </div>
-            <textarea
-              id="hint"
-              value={hint}
-              onChange={(e) => setHint(e.target.value)}
-              disabled={step.name === 'analyzing'}
-              maxLength={HINT_MAX_LENGTH}
-              rows={2}
-              placeholder="例如:请识别第 1、3、5 题 / 请识别红框内的题目 / 红笔是老师批改"
-              className="w-full rounded-2xl bg-black/20 px-4 py-3 text-white outline-none ring-1 ring-white/20 placeholder:text-white/40 focus:ring-2 focus:ring-mint disabled:opacity-60"
+          <label className="flex items-center gap-4">
+            <span className="shrink-0 text-lg">标签名称</span>
+            <input
+              value={title}
+              maxLength={PAPER_TITLE_MAX_LENGTH}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder={defaultPaperTitle()}
+              className={inputClass}
             />
-            <span className="mt-1 block text-right text-xs text-white/40">
-              {hint.length} / {HINT_MAX_LENGTH}
-            </span>
+          </label>
+          {error && <Note tone="error">{error}</Note>}
+          <div className="flex gap-4">
+            <button type="button" className={btn.primary} onClick={submit}>
+              上传错题库
+            </button>
+            <button
+              type="button"
+              className={btn.secondary}
+              onClick={cancelTitle}
+            >
+              取消
+            </button>
           </div>
+          <p className="text-xs text-white/50">
+            照片会发送给阿里云百炼识别,标签只保存在本机。请确认没有拍到姓名、学校等个人信息。
+          </p>
+        </div>
+      </Page>
+    );
 
-          {step.name === 'analyzing' ? (
-            <p role="status" className="mt-6 text-lg text-mint">
-              正在识别并分析原因,题目多时可能需要半分钟…
+  return (
+    <Page title="上传错题">
+      <div className="grid h-full gap-6 lg:grid-cols-[minmax(0,280px)_1fr]">
+        <div className="min-h-0 overflow-y-auto rounded-3xl bg-white/10 p-3 ring-1 ring-white/15">
+          {items.length === 0 ? (
+            <p className="grid h-full min-h-40 place-items-center text-white/60">
+              图片列表
             </p>
           ) : (
-            <div className="mt-6 flex flex-wrap gap-4">
-              <button
-                type="button"
-                className={primary}
-                onClick={() => analyze(step.image)}
-              >
-                开始分析
-              </button>
-              <button
-                type="button"
-                className={big}
-                onClick={() => back(step.image)}
-              >
-                重新选择
-              </button>
-            </div>
-          )}
-          {error && (
-            <p role="alert" className="mt-5 text-sun">
-              {error}
-            </p>
+            <ol className="space-y-3">
+              {items.map((it, i) => (
+                <li
+                  key={it.imageId}
+                  draggable
+                  onDragStart={() => (dragFrom.current = i)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => {
+                    if (dragFrom.current !== null) move(dragFrom.current, i);
+                    dragFrom.current = null;
+                  }}
+                  className="rounded-2xl bg-black/20 p-2 ring-1 ring-white/15"
+                >
+                  <img
+                    src={it.previewDataUrl}
+                    alt={`第 ${i + 1} 页`}
+                    draggable={false}
+                    className="max-h-40 w-full rounded-xl object-contain"
+                  />
+                  <div className="mt-2 flex items-center justify-between gap-1 text-sm">
+                    <span className="font-semibold text-mint">
+                      第 {i + 1} 页
+                    </span>
+                    <span className="flex gap-1">
+                      <button
+                        type="button"
+                        aria-label="上移"
+                        className={btn.small}
+                        disabled={i === 0}
+                        onClick={() => move(i, i - 1)}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="下移"
+                        className={btn.small}
+                        disabled={i === items.length - 1}
+                        onClick={() => move(i, i + 1)}
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        className={btn.small}
+                        onClick={() => replace(i)}
+                      >
+                        替换
+                      </button>
+                      <button
+                        type="button"
+                        className={btn.small}
+                        onClick={() => remove(i)}
+                      >
+                        删除
+                      </button>
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ol>
           )}
         </div>
-      )}
 
-      {step.name === 'confirm' && (
-        <div className="mt-8">
-          {step.queue.length > 1 && (
-            <p className="mb-4 text-lg font-semibold text-mint">
-              第 {step.index + 1} / {step.queue.length} 道
-            </p>
+        <div className="flex min-h-0 flex-col gap-5">
+          <p className="text-white/75">
+            添加试卷的照片或 PDF(最多 {MAX_PAGES_PER_PAPER} 页,按页码顺序)。
+            只传一张就识别这张上所有的错题和没做的题;传多张会当作同一份试卷一起识别。
+          </p>
+          <div className="flex flex-wrap gap-4">
+            <button
+              type="button"
+              className={btn.secondary}
+              onClick={addFiles}
+              disabled={full || busyText !== ''}
+            >
+              ＋ 添加图片或 PDF
+            </button>
+            <button
+              type="button"
+              className={btn.secondary}
+              onClick={paste}
+              disabled={full || busyText !== ''}
+            >
+              ＋ 添加粘贴截图
+            </button>
+          </div>
+          {full && (
+            <Note tone="info">
+              已经 {MAX_PAGES_PER_PAPER} 页了,再多请分次提交。
+            </Note>
           )}
-          {notice && (
-            <p role="status" className="mb-4 text-sm text-white/75">
-              {notice}
-            </p>
-          )}
-          <ConfirmMistake
-            key={step.queue[step.index]}
-            mistakeId={step.queue[step.index]}
-            onDone={onConfirmDone}
-          />
+          {busyText && <Waiting title={busyText} />}
+          {error && <Note tone="error">{error}</Note>}
+          <div className="mt-auto flex justify-end">
+            <button
+              type="button"
+              className={btn.primary}
+              disabled={items.length === 0 || busyText !== ''}
+              onClick={toTitle}
+            >
+              结束
+            </button>
+          </div>
         </div>
+      </div>
+    </Page>
+  );
+}
+
+/** 提交后的结果页:识别在后台进行,这里轮询状态,给出带数字的结果。 */
+function Done(props: {
+  paperId: string;
+  title: string;
+  onOpenLibrary: () => void;
+  onMore: () => void;
+}) {
+  const [paper, setPaper] = useState<PaperSummary | null>(null);
+
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      const list = await window.api.listPapers({ allTerms: true });
+      if (stop) return;
+      const found = list.find((p) => p.id === props.paperId) ?? null;
+      setPaper(found);
+      if (!found || found.status === 'processing') setTimeout(tick, 2000);
+    };
+    void tick();
+    return () => {
+      stop = true;
+    };
+  }, [props.paperId]);
+
+  const processing = !paper || paper.status === 'processing';
+  return (
+    <div className="max-w-xl space-y-6">
+      {processing ? (
+        <Waiting
+          title="正在识别…"
+          hint={`标签「${props.title}」。题目多时可能要一两分钟,可以先去做别的,稍后在错题库查看。`}
+        />
+      ) : paper.status === 'failed' ? (
+        <>
+          <Note tone="error">
+            「{paper.title}」识别失败:{paper.errorMessage ?? '请重试'}
+          </Note>
+          <p className="text-sm text-white/60">
+            图片已保存在本机,到错题库里点「重试」即可。
+          </p>
+        </>
+      ) : paper.totalCount === 0 ? (
+        <p className="text-lg">
+          「{paper.title}」识别完成,没有发现做错或没做的题。
+        </p>
+      ) : (
+        <p className="text-lg">
+          错误题已经上传,标签为「{paper.title}」,识别出 {paper.totalCount}{' '}
+          道,其中 {paper.pendingCount} 道待确认,请去错题库进行确认。
+        </p>
       )}
+      <div className="flex gap-4">
+        <button
+          type="button"
+          className={btn.primary}
+          onClick={props.onOpenLibrary}
+        >
+          进入错题库
+        </button>
+        <button type="button" className={btn.secondary} onClick={props.onMore}>
+          继续上传
+        </button>
+      </div>
     </div>
   );
 }

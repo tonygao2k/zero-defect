@@ -1,11 +1,20 @@
 import type { AnalysisResult } from './analysis';
 import type {
+  BatchConfirmResult,
   ConfirmMistakeInput,
-  EditableFields,
+  ListMistakesInput,
   MistakeStatus,
   MistakeSummary,
+  EditableFields,
 } from './mistakes';
-import type { ProviderId } from './providers';
+import type { PaperSummary } from './papers';
+import type {
+  PracticeAnswerInput,
+  PracticeResult,
+  PracticeSession,
+  ReviseResult,
+} from './practice';
+import type { HomeStats } from './stats';
 import type { Settings } from './settings';
 
 /** IPC 通道名,主进程和预加载脚本共用,避免两边拼写不一致。 */
@@ -16,18 +25,29 @@ export const IPC = {
   getSettings: 'settings:get',
   saveSettings: 'settings:save',
   setApiKey: 'settings:setApiKey',
-  getKeyStatus: 'settings:getKeyStatus',
+  hasApiKey: 'settings:hasApiKey',
   testApiKey: 'settings:testApiKey',
-  pickImage: 'image:pick',
+  pickFiles: 'file:pick',
   pasteImage: 'image:paste',
+  importImage: 'image:import',
   discardImage: 'image:discard',
-  analyzeMistake: 'mistake:analyze',
+  submitPaper: 'paper:submit',
+  listPapers: 'paper:list',
+  renamePaper: 'paper:rename',
+  deletePaper: 'paper:delete',
+  retryPaper: 'paper:retry',
+  confirmPaper: 'paper:confirmAll',
   getMistake: 'mistake:get',
   confirmMistake: 'mistake:confirm',
-  skipAttribution: 'mistake:skip',
-  discardDraft: 'mistake:discardDraft',
+  confirmRecommended: 'mistake:confirmRecommended',
+  deleteMistake: 'mistake:delete',
   listMistakes: 'mistake:list',
   getTaxonomy: 'taxonomy:get',
+  getHomeStats: 'home:stats',
+  startPractice: 'practice:start',
+  submitPractice: 'practice:submit',
+  revisePractice: 'practice:revise',
+  finishPractice: 'practice:finish',
 } as const;
 
 export type UpdateCheckResult =
@@ -41,20 +61,23 @@ export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export type ImageHandle = { imageId: string; previewDataUrl: string };
 
-/** 一次分析可能得到多道错题。完整内容用 getMistake 逐道读取。 */
-export type AnalyzeResponse =
-  | {
-      kind: 'ok';
-      mistakeIds: string[];
-      skipped: number;
-      ignoredCorrect: number;
-    }
-  | { kind: 'duplicate'; mistakeIds: string[]; pendingIds: string[] };
+/** 选文件对话框的结果:图片已导入为句柄,PDF 把原始字节交给界面转成每页图片。 */
+export type PickedFile =
+  | { kind: 'image'; handle: ImageHandle }
+  | { kind: 'pdf'; name: string; bytes: Uint8Array };
+
+export type SubmitResponse =
+  | { kind: 'started'; paperId: string }
+  | { kind: 'duplicate'; paperId: string; title: string };
 
 export type MistakeDetail = {
   id: string;
   status: MistakeStatus;
-  imageDataUrl: string | null;
+  paperId: string | null;
+  paperTitle: string | null;
+  incomplete: boolean;
+  /** 这道题涉及的页的图片,按页序;跨页题有多张。 */
+  imageDataUrls: string[];
   fields: Omit<EditableFields, 'mistakeId'>;
   analysis: AnalysisResult | null;
 };
@@ -78,33 +101,58 @@ export type Api = {
 
   getSettings(): Promise<Settings>;
   saveSettings(input: Settings): Promise<Result<Settings>>;
-  /** 只写不读,按服务商分别保存。传空字符串表示清除。 */
-  setApiKey(input: {
-    provider: ProviderId;
-    key: string;
-  }): Promise<Result<void>>;
-  /** 各服务商是否已保存 Key,不返回 Key 本身。 */
-  getKeyStatus(): Promise<Record<ProviderId, boolean>>;
-  /** 用已保存的 Key 和所选模型发一次极小的真实请求,验证 Key、地址、模型是否一起可用。 */
-  testApiKey(input: {
-    provider: ProviderId;
-    model: string;
-  }): Promise<Result<void>>;
+  /** 只写不读。传空字符串表示清除。 */
+  setApiKey(input: { key: string }): Promise<Result<void>>;
+  /** 是否已保存 Key,不返回 Key 本身。 */
+  hasApiKey(): Promise<boolean>;
+  /** 用已保存的 Key 发一次极小的真实请求,验证 Key 是否可用。 */
+  testApiKey(): Promise<Result<void>>;
 
-  /** 选择文件或读取剪贴板,主进程落盘后只返回句柄和预览。取消时 value 为 null。 */
-  pickImage(): Promise<Result<ImageHandle | null>>;
+  /** 选择图片或 PDF(可多选)。取消时 value 为空数组。 */
+  pickFiles(): Promise<Result<PickedFile[]>>;
   pasteImage(): Promise<Result<ImageHandle | null>>;
+  /** 界面把 PDF 的某一页渲染成 JPEG 后交给主进程,得到和普通图片一样的句柄。 */
+  importImage(input: { bytes: Uint8Array }): Promise<Result<ImageHandle>>;
   discardImage(input: { imageId: string }): Promise<void>;
 
-  /** hint 是家长的补充说明(如“请识别红框内的题目”),可选,长度上限见 HINT_MAX_LENGTH。 */
-  analyzeMistake(input: {
-    imageId: string;
-    hint?: string;
-  }): Promise<Result<AnalyzeResponse>>;
+  /** 提交一份试卷:图片按页序,标签为空则用默认时间。立即返回,识别在后台进行。 */
+  submitPaper(input: {
+    imageIds: string[];
+    title: string;
+  }): Promise<Result<SubmitResponse>>;
+  listPapers(input?: { allTerms?: boolean }): Promise<PaperSummary[]>;
+  renamePaper(input: { paperId: string; title: string }): Promise<Result<void>>;
+  deletePaper(input: { paperId: string }): Promise<Result<void>>;
+  retryPaper(input: { paperId: string }): Promise<Result<void>>;
+  /** 对整份试卷里所有待确认的题,采用 AI 推荐的原因批量确认。 */
+  confirmPaper(input: { paperId: string }): Promise<Result<BatchConfirmResult>>;
+
   getMistake(input: { mistakeId: string }): Promise<Result<MistakeDetail>>;
   confirmMistake(input: ConfirmMistakeInput): Promise<Result<void>>;
-  skipAttribution(input: EditableFields): Promise<Result<void>>;
-  discardDraft(input: { mistakeId: string }): Promise<Result<void>>;
-  listMistakes(input?: { status?: MistakeStatus }): Promise<MistakeSummary[]>;
+  /**
+   * 直接采用 AI 推荐的原因和知识点确认。confirmed 为 false 时信息不够,什么都没改,
+   * 界面应打开详情页让家长补充。
+   */
+  confirmRecommended(input: {
+    mistakeId: string;
+  }): Promise<Result<{ confirmed: boolean }>>;
+  deleteMistake(input: { mistakeId: string }): Promise<Result<void>>;
+  listMistakes(input?: ListMistakesInput): Promise<MistakeSummary[]>;
   getTaxonomy(): Promise<Taxonomy>;
+
+  getHomeStats(): Promise<HomeStats>;
+  /** 开始(或接着做)一次智能练习。出题要等一会儿。 */
+  startPractice(): Promise<Result<PracticeSession>>;
+  submitPractice(input: {
+    sessionId: string;
+    answers: PracticeAnswerInput[];
+    elapsedMs?: number;
+  }): Promise<Result<PracticeResult>>;
+  /** 订正本次答错的题。答对或放弃时才返回答案和解析。 */
+  revisePractice(input: {
+    questionId: string;
+    answer: string;
+    giveUp?: boolean;
+  }): Promise<Result<ReviseResult>>;
+  finishPractice(input: { sessionId: string }): Promise<Result<void>>;
 };

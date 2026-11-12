@@ -8,6 +8,7 @@ import {
 } from './postprocess';
 
 const ctx: PostprocessContext = {
+  pageCount: 2,
   activeCauseCodes: new Set([
     'carry_omission',
     'calculation_error',

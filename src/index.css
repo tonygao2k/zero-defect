@@ -1,6 +1,23 @@
 @import 'tailwindcss';
 
+/* Fira Code(OFL 协议):只用于答案、解题过程等需要等宽对齐的输入框,公式仍由 KaTeX 自带字体渲染。 */
+@font-face {
+  font-family: 'Fira Code';
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/fonts/FiraCode-Regular.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Fira Code';
+  font-weight: 500;
+  font-display: swap;
+  src: url('./assets/fonts/FiraCode-Medium.ttf') format('truetype');
+}
+
 @theme {
+  --font-mono:
+    'Fira Code', ui-monospace, SFMono-Regular, Menlo, 'PingFang SC',
+    'Microsoft YaHei', monospace;
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
@@ -69,4 +86,12 @@ body {
 
 .start-btn {
   animation: pulse-ring 2.4s ease-out infinite;
+}
+
+/* 等宽输入框:关掉连字,否则余数写法 4...1 会被连成一个符号。 */
+.font-mono {
+  font-variant-ligatures: none;
+  font-feature-settings:
+    'liga' 0,
+    'calt' 0;
 }

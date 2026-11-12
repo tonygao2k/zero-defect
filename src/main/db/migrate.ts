@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { SCHEMA_V1 } from './schema';
 import { SCHEMA_V3 } from './schema-v3';
+import { migrateV4 } from './schema-v4';
 import {
   CURRICULUM_SEEDS,
   GENERIC_KNOWLEDGE_POINTS,
@@ -59,6 +60,11 @@ const MIGRATIONS: Migration[] = [
     up: (db) => {
       db.exec(SCHEMA_V3);
     },
+  },
+  {
+    version: 4,
+    foreignKeysOff: true,
+    up: migrateV4,
   },
 ];
 

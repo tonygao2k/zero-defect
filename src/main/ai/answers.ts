@@ -26,3 +26,40 @@ export function isAnsweredCorrectly(
   const c = normalizeAnswer(correct);
   return s !== '' && c !== '' && s === c;
 }
+
+const PLAIN_NUMBER = /^-?\d+(?:\.\d+)?$/;
+
+/** 去掉孩子可能顺手写上的单位(如“12 个”“36cm”),只留结果本身。 */
+function stripUnit(text: string, unit: string): string {
+  const t = normalizeAnswer(text);
+  const u = normalizeAnswer(unit);
+  return u && t.endsWith(u) ? t.slice(0, -u.length) : t;
+}
+
+/**
+ * 练习题判分。选择题比选项字母;计算题和应用题比结果:
+ * 先比规整后的文字(分数、带余数的除法按写法比较),
+ * 两边都是普通数字时再按数值比较,所以 0.50 和 0.5 算相同。
+ * 不跨形式比较(0.5 和 1/2),因为小学常要求写成最简分数。
+ */
+export function checkPracticeAnswer(
+  answerType: 'choice' | 'number',
+  submitted: string,
+  correct: string,
+  unit = '',
+): boolean {
+  if (answerType === 'choice') {
+    return (
+      normalizeAnswer(submitted).slice(0, 1) !== '' &&
+      normalizeAnswer(submitted).slice(0, 1) ===
+        normalizeAnswer(correct).slice(0, 1)
+    );
+  }
+  const s = stripUnit(submitted, unit);
+  const c = stripUnit(correct, unit);
+  if (s === '' || c === '') return false;
+  if (s === c) return true;
+  return (
+    PLAIN_NUMBER.test(s) && PLAIN_NUMBER.test(c) && Number(s) === Number(c)
+  );
+}

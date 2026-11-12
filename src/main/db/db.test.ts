@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,9 +17,9 @@ describe('database migrations', () => {
       code: string;
       active: number;
     }[];
-    expect(causes).toHaveLength(9);
+    expect(causes).toHaveLength(13);
     expect(causes.find((c) => c.code === 'needs_review')?.active).toBe(0);
-    expect(causes.filter((c) => c.active === 1)).toHaveLength(8);
+    expect(causes.filter((c) => c.active === 1)).toHaveLength(12);
 
     const other = db
       .prepare("SELECT stage FROM knowledge_points WHERE code = 'other'")
@@ -32,7 +33,7 @@ describe('database migrations', () => {
     const n = db.prepare('SELECT COUNT(*) AS n FROM root_causes').get() as {
       n: number;
     };
-    expect(n.n).toBe(9);
+    expect(n.n).toBe(13);
   });
 
   it('enforces foreign keys', () => {
@@ -64,12 +65,12 @@ describe('database migrations', () => {
     openDatabase(file).close();
     expect(fs.existsSync(path.join(dir, 'backups'))).toBe(false);
 
-    // 模拟旧版本:删掉 v2 记录和种子数据,再重新打开应触发备份并重新迁移。
-    const raw = openDatabase(file);
-    raw.exec(
-      'DELETE FROM schema_migrations WHERE version >= 2; DELETE FROM curriculum_knowledge_points; DELETE FROM knowledge_points; DELETE FROM curricula; DELETE FROM root_causes;',
-    );
-    raw.close();
+    // 模拟旧版本:真正停在 v3 的数据库,再用 openDatabase 打开应触发备份并升级。
+    fs.rmSync(file);
+    const old = new Database(file);
+    old.pragma('foreign_keys = ON');
+    migrate(old, undefined, 3);
+    old.close();
 
     const db = openDatabase(file);
     expect(currentVersion(db)).toBe(LATEST_VERSION);

@@ -185,6 +185,6 @@ describe('ping', () => {
       (e) => e,
     )) as LlmError;
     expect(error.kind).toBe('not_found');
-    expect(error.message).toContain('换一个模型');
+    expect(error.message).toContain('找不到所需的模型');
   });
 });

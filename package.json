@@ -45,6 +45,7 @@
     "better-sqlite3": "^13.0.3",
     "fraction.js": "^5.3.4",
     "katex": "^0.19.1",
+    "pdfjs-dist": "^6.5.438",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
