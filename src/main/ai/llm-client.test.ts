@@ -35,6 +35,18 @@ describe('chat request', () => {
     expect(body).not.toHaveProperty('temperature');
   });
 
+  it('sends enable_thinking only when asked to', async () => {
+    const fetchFn = vi.fn().mockImplementation(async () => ok('x'));
+    await chat({ ...base, fetchFn });
+    expect(JSON.parse(fetchFn.mock.calls[0][1].body)).not.toHaveProperty(
+      'enable_thinking',
+    );
+    await chat({ ...base, fetchFn, enableThinking: false });
+    expect(JSON.parse(fetchFn.mock.calls[1][1].body).enable_thinking).toBe(
+      false,
+    );
+  });
+
   it('tolerates a trailing slash in the base URL', async () => {
     const fetchFn = vi.fn().mockResolvedValue(ok('x'));
     await chat({

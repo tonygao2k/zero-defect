@@ -139,3 +139,27 @@ describe('postprocess', () => {
     expect(run({ image_quality: 'blurry' }).warnings.join()).toContain('模糊');
   });
 });
+
+describe('postprocess: figure on the original question', () => {
+  it('treats a missing figure as none and clears any stray note', () => {
+    expect(run()).toMatchObject({ figureKind: 'none', figureNote: '' });
+    expect(
+      run({ figure_kind: 'none', figure_note: '多余的说明' }),
+    ).toMatchObject({ figureKind: 'none', figureNote: '' });
+  });
+
+  it('keeps a known figure kind and its note', () => {
+    const a = run({
+      figure_kind: 'cube_net',
+      figure_note: '6 个带字的格子组成的展开图,问哪两个字相对',
+    });
+    expect(a.figureKind).toBe('cube_net');
+    expect(a.figureNote).toContain('展开图');
+  });
+
+  it('maps an unrecognised kind to other, and trims long notes', () => {
+    const a = run({ figure_kind: '几何图形', figure_note: '长'.repeat(500) });
+    expect(a.figureKind).toBe('other');
+    expect(a.figureNote).toHaveLength(200);
+  });
+});

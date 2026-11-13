@@ -28,6 +28,8 @@ export type MistakeSummary = {
   status: MistakeStatus;
   paperId: string | null;
   questionMarkdown: string;
+  /** 试卷上的原始题号(如“第3题”),方便在试卷里找题;没有就是空字符串。 */
+  label: string;
   knowledgePointLabel: string | null;
   primaryRootCauseLabel: string | null;
   /** 题目被页边截断,需要补传缺页。 */

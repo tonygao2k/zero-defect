@@ -15,6 +15,8 @@ const config: ForgeConfig = {
     asar: true,
     name: '超级错题本',
     appBundleId: 'com.zerodefect.app',
+    // 不写扩展名,打包时会按平台补成 icon.icns。
+    icon: path.resolve(__dirname, 'build', 'icon'),
   },
   rebuildConfig: {},
   hooks: {

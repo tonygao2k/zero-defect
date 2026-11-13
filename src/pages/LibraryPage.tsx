@@ -279,7 +279,10 @@ export function LibraryPage() {
               {paper.status === 'done' && (
                 <>
                   <div className="mt-4 flex flex-wrap items-center gap-3">
-                    <div role="tablist" className="flex gap-2">
+                    <div
+                      role="tablist"
+                      className="flex rounded-full bg-black/25 p-1 ring-1 ring-white/15"
+                    >
                       {FILTERS.map((f) => (
                         <button
                           key={f.id}
@@ -287,10 +290,10 @@ export function LibraryPage() {
                           role="tab"
                           aria-selected={filter === f.id}
                           onClick={() => setFilter(f.id)}
-                          className={`h-9 rounded-full px-4 text-sm font-semibold ring-1 transition ${
+                          className={`h-8 rounded-full px-4 text-sm font-semibold transition ${
                             filter === f.id
-                              ? 'bg-white/25 ring-mint'
-                              : 'bg-white/10 ring-white/20 hover:bg-white/20'
+                              ? 'bg-mint text-ink'
+                              : 'text-white/75 hover:text-white'
                           }`}
                         >
                           {f.label}
@@ -376,6 +379,11 @@ function MistakeRow(props: {
         className="min-w-0 flex-1 text-left"
       >
         <span className="line-clamp-2 block break-words">
+          {m.label && (
+            <span className="mr-2 rounded-md bg-white/20 px-1.5 py-0.5 text-xs font-bold text-mint">
+              {m.label}
+            </span>
+          )}
           <MarkdownView inline>{m.questionMarkdown}</MarkdownView>
         </span>
         <span className="mt-1 flex flex-wrap gap-x-3 text-xs text-white/60">

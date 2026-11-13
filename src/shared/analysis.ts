@@ -31,7 +31,42 @@ export const RawAnalysisSchema = z.object({
     )
     .default([]),
   recommended_root_cause: z.string().nullish(),
+  /** 原题带的图属于哪一类;没有图就是 none。 */
+  figure_kind: z.string().nullish(),
+  /** 一句话说明原题配图的特点,出变式题时参考。 */
+  figure_note: z.string().nullish(),
 });
+
+/**
+ * 原题配图的类别。前四类是应用能画的(见 figure.ts),出变式题时可以配同类的图;
+ * other 是画不了的图(几何作图、情境图等),只记下特点。
+ */
+export const FIGURE_KINDS = [
+  'none',
+  'cube_net',
+  'number_line',
+  'bar_chart',
+  'cube_stack',
+  'other',
+] as const;
+export type FigureKind = (typeof FIGURE_KINDS)[number];
+
+/**
+ * 旧数据没有记录配图类别,按题目文字猜一个。猜不准也没关系,
+ * 只用来提示出题:能画的类别要求配同类的图,画不了的提醒改成文字题。
+ */
+export function inferFigureKind(question: string): FigureKind {
+  const t = question.replace(/[*_$\\\s]/g, '');
+  if (/展开图/.test(t)) return 'cube_net';
+  if (/数轴/.test(t)) return 'number_line';
+  if (/统计图|条形图/.test(t)) return 'bar_chart';
+  if (
+    /从[前后左右上正侧][^，。]{0,16}看.{0,8}(立体图形|正方体|小正方体)/.test(t)
+  )
+    return 'cube_stack';
+  if (/[上下左右如见]图|看图|图中|图示/.test(t)) return 'other';
+  return 'none';
+}
 
 export type RawAnalysis = z.infer<typeof RawAnalysisSchema>;
 
@@ -94,4 +129,8 @@ export type AnalysisResult = {
   recommendedRootCause: string | null;
   /** 给家长看的中文提示。 */
   warnings: string[];
+  /** 原题配图的类别;旧数据没有这一项,按没有图处理。 */
+  figureKind?: FigureKind;
+  /** 原题配图的特点,没有就是空字符串。 */
+  figureNote?: string;
 };

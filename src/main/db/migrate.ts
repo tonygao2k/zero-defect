@@ -66,6 +66,13 @@ const MIGRATIONS: Migration[] = [
     foreignKeysOff: true,
     up: migrateV4,
   },
+  {
+    version: 5,
+    // 练习题的配图参数(JSON),没有配图的题为空。
+    up: (db) => {
+      db.exec('ALTER TABLE practice_questions ADD COLUMN figure_json TEXT');
+    },
+  },
 ];
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

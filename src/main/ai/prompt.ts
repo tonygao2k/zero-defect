@@ -54,7 +54,9 @@ export function buildAnalysisMessages(
       "root_causes": [
         { "code": "从【错误归因清单】里选", "confidence": 0 到 1 的小数, "evidence": "指出孩子具体哪一步出了什么问题" }
       ],
-      "recommended_root_cause": "root_causes 中你认为最主要的一个 code"
+      "recommended_root_cause": "root_causes 中你认为最主要的一个 code",
+      "figure_kind": "这道题带的图属于哪一类:none(没有图)、cube_net(正方体展开图)、number_line(数轴)、bar_chart(条形统计图)、cube_stack(小正方体搭的立体图形,问从某个方向看)、other(其他图,如几何图形、线段图、情境图)",
+      "figure_note": "有图时用一句话写出图的特点,如“由 6 个带字的格子组成的展开图,问哪两个字相对”“数轴上标了 A、B 两点,问 A 表示的小数”;没有图填空字符串"
     }
   ]
 }
@@ -66,7 +68,8 @@ export function buildAnalysisMessages(
 4. 归因 code 和知识点 code 只能从下面的清单里选,不要自己编造新的。孩子没有作答的题,归因选 not_attempted。
 5. 归因要基于孩子的解题过程找出真正出错的那一步;evidence 写具体,不要写空话。没有看到解题过程时不要凭空猜测,confidence 要给得低一些。
 6. 看不清的字不要猜,宁可在 image_quality 里如实反映。最多给出 3 个归因候选,按可能性从高到低排列。
-7. student_answer 必须照抄孩子写在卷子上的内容,correct_answer 必须由你独立算出,两者不要为了看起来一致而互相迁就。
+7. 题目里带图时,要如实填写 figure_kind 和 figure_note,题目文字里写“如图”但你看到的是图,不要省略。图里的关键信息(数据、字、位置)写进 question_markdown。
+8. student_answer 必须照抄孩子写在卷子上的内容,correct_answer 必须由你独立算出,两者不要为了看起来一致而互相迁就。
 
 【错误归因清单】
 ${causes}

@@ -1,4 +1,5 @@
-import { app, BrowserWindow, session } from 'electron';
+import { app, BrowserWindow, screen, session } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { APP_DISPLAY_NAME } from './shared/app-info';
 import { registerIpc } from './main/ipc';
@@ -21,10 +22,18 @@ const buildCsp = (dev: boolean) =>
     "form-action 'none'",
   ].join('; ');
 
+/** 初始窗口大小:宽占屏幕可用区域的 85%、高占 95%,不超过 1440×1100,也不小于最小尺寸。 */
+const initialSize = () => {
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  return {
+    width: Math.max(960, Math.min(1440, Math.round(width * 0.85))),
+    height: Math.max(640, Math.min(1100, Math.round(height * 0.95))),
+  };
+};
+
 const createWindow = () => {
   const mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 780,
+    ...initialSize(),
     minWidth: 960,
     minHeight: 640,
     title: APP_DISPLAY_NAME,
@@ -66,6 +75,12 @@ app.whenReady().then(() => {
       },
     });
   });
+
+  // 打包后的应用图标来自 .icns;开发模式下 Dock 里还是 Electron 默认图标,这里手动换掉。
+  if (isDev && process.platform === 'darwin') {
+    const icon = path.join(app.getAppPath(), 'build', 'icon.png');
+    if (fs.existsSync(icon)) app.dock?.setIcon(icon);
+  }
 
   registerIpc();
   createWindow();

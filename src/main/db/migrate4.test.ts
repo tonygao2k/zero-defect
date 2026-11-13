@@ -26,7 +26,7 @@ const insertLegacy = (
 describe('migration 4', () => {
   it('adds the new root causes and keeps the old ones', () => {
     const db = v3Database();
-    migrate(db);
+    migrate(db, undefined, 4);
     expect(currentVersion(db)).toBe(4);
     const codes = (
       db.prepare('SELECT code FROM root_causes WHERE active = 1').all() as {

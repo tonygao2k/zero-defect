@@ -350,7 +350,7 @@ export class MistakeRepo {
       )
       .all(...args) as (Omit<
       MistakeSummary,
-      'incomplete' | 'needsAttention'
+      'incomplete' | 'needsAttention' | 'label'
     > & {
       incomplete: number;
       aj: string | null;
@@ -358,6 +358,7 @@ export class MistakeRepo {
     return rows.map(({ aj, incomplete, ...rest }) => ({
       ...rest,
       incomplete: incomplete === 1,
+      label: labelOf(aj),
       needsAttention: needsAttention(rest.status, aj),
     }));
   }
@@ -371,5 +372,16 @@ function needsAttention(status: MistakeStatus, aj: string | null): boolean {
     return a.warnings.length > 0;
   } catch {
     return false;
+  }
+}
+
+/** 试卷上的原始题号,来自识别结果。 */
+function labelOf(aj: string | null): string {
+  if (!aj) return '';
+  try {
+    const label = (JSON.parse(aj) as { label?: unknown }).label;
+    return typeof label === 'string' ? label.trim() : '';
+  } catch {
+    return '';
   }
 }

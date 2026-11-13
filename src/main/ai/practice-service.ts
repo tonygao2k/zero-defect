@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { BAILIAN, RECOGNITION_MODEL, TEXT_MODEL } from '../../shared/bailian';
 import {
   PRACTICE_SIZE,
+  isCodeVerified,
   parsePracticeBatch,
   type PracticeAnswerInput,
   type PracticeQuestion,
@@ -14,6 +15,8 @@ import type { Settings } from '../../shared/settings';
 import { MasteryRepo, type PairInfo } from '../mastery';
 import type { MistakeRepo } from '../mistakes';
 import { checkPracticeAnswer } from './answers';
+import { inferFigureKind } from '../../shared/analysis';
+import { parseFigure, type Figure } from '../../shared/figure';
 import { extractJson } from './json';
 import { LlmError, chat as defaultChat } from './llm-client';
 import { AnalysisError } from './paper-service';
@@ -36,10 +39,55 @@ type Row = {
   correct_answer: string;
   answer_unit: string | null;
   solution_markdown: string | null;
+  figure_json: string | null;
   root_cause_id: string;
   knowledge_point_id: string;
   status: string;
 };
+
+/** 每一对多出几道备用题,用来补校验淘汰掉的。 */
+const SPARE_PER_PAIR = 2;
+
+/** 校验求解的上限:超时或输出过长的题直接丢弃。 */
+// 模型会先写推理再给答案,展开图这类题推理较长,上限太小会被截断。
+const SOLVE_TIMEOUT_MS = 45_000;
+const SOLVE_MAX_TOKENS = 4096;
+
+/** 取出保存的配图;数据坏了就当没有配图,不影响做题。 */
+function parseStoredFigure(json: string | null): Figure | null {
+  if (!json) return null;
+  try {
+    const parsed = parseFigure(JSON.parse(json));
+    return parsed.ok ? parsed.figure : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 从识别结果里取出原题配图的类别和特点;旧数据没有这项就当没有图。 */
+function figureOf(
+  aj: string | null,
+  question: string,
+): {
+  figureKind?: string;
+  figureNote?: string;
+} {
+  try {
+    const a = (aj ? JSON.parse(aj) : {}) as {
+      figureKind?: unknown;
+      figureNote?: unknown;
+    };
+    if (typeof a.figureKind === 'string') {
+      return {
+        figureKind: a.figureKind,
+        figureNote: typeof a.figureNote === 'string' ? a.figureNote : undefined,
+      };
+    }
+  } catch {
+    // 识别结果损坏就按题目文字猜。
+  }
+  return { figureKind: inferFigureKind(question) };
+}
 
 const nowIso = (d: Date) => d.toISOString();
 
@@ -127,7 +175,10 @@ export class PracticeService {
     const counts = chosen.map(() => 0);
     for (let i = 0; i < PRACTICE_SIZE; i++) counts[i % chosen.length]++;
     // 多要一点,校验会淘汰一部分;最后只取 PRACTICE_SIZE 道。
-    return chosen.map((pair, i) => ({ pair, count: counts[i] + 1 }));
+    return chosen.map((pair, i) => ({
+      pair,
+      count: counts[i] + SPARE_PER_PAIR,
+    }));
   }
 
   private interleave<T>(groups: T[][]): T[] {
@@ -164,15 +215,25 @@ export class PracticeService {
 
     const examples = this.db
       .prepare(
-        `SELECT m.question_markdown AS question, COALESCE(m.student_answer, '') AS studentAnswer
+        `SELECT m.question_markdown AS question, COALESCE(m.student_answer, '') AS studentAnswer,
+                m.analysis_json AS aj
          FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id = m.id AND mrc.is_primary = 1
          WHERE m.status = 'active' AND mrc.root_cause_id = ? AND m.knowledge_point_id = ?
          ORDER BY m.updated_at DESC LIMIT 2`,
       )
-      .all(pair.rootCauseId, pair.knowledgePointId) as {
-      question: string;
-      studentAnswer: string;
-    }[];
+      .all(pair.rootCauseId, pair.knowledgePointId)
+      .map((r) => {
+        const row = r as {
+          question: string;
+          studentAnswer: string;
+          aj: string | null;
+        };
+        return {
+          question: row.question,
+          studentAnswer: row.studentAnswer,
+          ...figureOf(row.aj, row.question),
+        };
+      });
     const avoid = (
       this.db
         .prepare(
@@ -184,12 +245,15 @@ export class PracticeService {
 
     const errors: string[] = [];
     let drafts: PracticeQuestionDraft[] = [];
+    const t0 = Date.now();
     try {
       // 返回的 JSON 无法解析时重试一次。
       for (let i = 0; i < 2 && drafts.length === 0; i++) {
         const text = await chat({
           ...opts,
           model: TEXT_MODEL,
+          // 出题不需要长篇推理(答案之后会独立校验),关掉思考能快很多。
+          enableThinking: false,
           messages: buildGenerateMessages({
             grade: settings.grade,
             knowledgePoint: info.kp,
@@ -208,6 +272,7 @@ export class PracticeService {
       return { questions: [], errors };
     }
 
+    const genMs = Date.now() - t0;
     // 每道题由另一次独立求解来校验,答案不一致的丢弃。
     const verified: (PracticeQuestionDraft & {
       pair: PairInfo;
@@ -215,10 +280,18 @@ export class PracticeService {
     })[] = [];
     await Promise.all(
       drafts.map(async (d) => {
+        if (isCodeVerified(d.figure)) {
+          verified.push({ ...d, pair, solver: 'code' });
+          return;
+        }
         try {
           const text = await chat({
             ...opts,
             model: RECOGNITION_MODEL,
+            // 校验只要一个答案。算得太久的题多半有歧义或超纲,宁可丢掉也不拖慢整批。
+            timeoutMs: SOLVE_TIMEOUT_MS,
+            maxRetries: 1,
+            maxTokens: SOLVE_MAX_TOKENS,
             messages: buildSolveMessages(d),
           });
           const solved = (extractJson(text) as { answer?: unknown } | null)
@@ -229,17 +302,33 @@ export class PracticeService {
               : '';
           if (
             checkPracticeAnswer(d.answerType, answer, d.correctAnswer, d.unit)
-          )
+          ) {
             verified.push({ ...d, pair, solver: answer });
+          } else {
+            // 丢题时记下两边的答案,方便判断是题出错了还是校验算错了。
+            console.info(
+              `[practice] 丢弃(答案不一致):${d.questionMarkdown.slice(0, 80)} | 出题答案=${d.correctAnswer} | 校验答案=${answer || `(空,原文:${text.slice(0, 80)})`}`,
+            );
+          }
         } catch (error) {
-          errors.push(
-            error instanceof LlmError ? error.message : '校验答案时出错',
+          console.info(
+            `[practice] 丢弃(校验失败):${d.questionMarkdown.slice(0, 80)} | ${error instanceof Error ? error.message : String(error)}`,
           );
+          // 校验输出被截断,说明这道题本身太绕,只丢掉它;不要把“试卷太多”的提示带给用户。
+          if (!(error instanceof LlmError && error.kind === 'truncated')) {
+            errors.push(
+              error instanceof LlmError ? error.message : '校验答案时出错',
+            );
+          }
         }
       }),
     );
     // Promise.all 里的完成顺序不固定,按出题顺序还原。
     verified.sort((a, b) => drafts.indexOf(a) - drafts.indexOf(b));
+    // 出题慢时看这行:分别是出题、校验耗时(毫秒),以及其中带配图的题数。
+    console.info(
+      `[practice] ${pair.knowledgePointId}/${pair.rootCauseId}: 出题 ${genMs}ms(${drafts.length} 道,带图 ${drafts.filter((d) => d.figure).length} 道),校验 ${Date.now() - t0 - genMs}ms(通过 ${verified.length} 道)`,
+    );
     return { questions: verified, errors };
   }
 
@@ -256,8 +345,8 @@ export class PracticeService {
         .run(sessionId, t.slice(0, 10), t);
       const insert = this.db.prepare(
         `INSERT INTO practice_questions (id, session_id, position, root_cause_id, knowledge_point_id, source_mistake_id,
-           question_markdown, answer_type, options_json, correct_answer, answer_unit, solution_markdown, difficulty, status, verify_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'assigned', ?, ?)`,
+           question_markdown, answer_type, options_json, correct_answer, answer_unit, solution_markdown, figure_json, difficulty, status, verify_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'assigned', ?, ?)`,
       );
       questions.forEach((q, i) => {
         const source = this.db
@@ -282,6 +371,7 @@ export class PracticeService {
           q.correctAnswer,
           q.unit || null,
           q.solutionMarkdown || null,
+          q.figure ? JSON.stringify(q.figure) : null,
           JSON.stringify({ solver: q.solver, model: RECOGNITION_MODEL }),
           t,
         );
@@ -318,6 +408,7 @@ export class PracticeService {
             ? (JSON.parse(r.options_json) as string[])
             : [],
           unit: r.answer_unit ?? '',
+          figure: parseStoredFigure(r.figure_json),
         }),
       ),
     };

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { FigureView } from '../components/FigureView';
 import { Hero } from '../components/Hero';
 import { MarkdownView } from '../components/MarkdownView';
 import { Note, Waiting, btn } from '../components/ui';
@@ -33,6 +34,7 @@ function QuestionCard(props: {
       <div className="text-xl leading-relaxed">
         <MarkdownView>{q.questionMarkdown}</MarkdownView>
       </div>
+      {q.figure && <FigureView figure={q.figure} />}
       {q.answerType === 'choice' ? (
         <div className="mt-6 grid gap-3 sm:grid-cols-2" role="radiogroup">
           {q.options.map((text, i) => {

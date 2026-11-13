@@ -52,6 +52,8 @@ export type ChatOptions = {
   maxRetries?: number;
   timeoutMs?: number;
   maxTokens?: number;
+  /** 百炼的思考模式开关。填 false 可以关掉长篇推理,明显更快;不填就用模型默认。 */
+  enableThinking?: boolean;
   /** 每次成功返回后调用,用来记录 token 用量(成本核算)。 */
   onUsage?: (usage: LlmUsage) => void;
 };
@@ -155,6 +157,9 @@ async function request(opts: ChatOptions): Promise<unknown> {
         model: opts.model,
         messages: opts.messages,
         max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+        ...(opts.enableThinking === undefined
+          ? {}
+          : { enable_thinking: opts.enableThinking }),
       }),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
     });

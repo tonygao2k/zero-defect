@@ -1,7 +1,9 @@
-import type {
-  AnalysisResult,
-  RawAnalysis,
-  RootCauseCandidate,
+import {
+  FIGURE_KINDS,
+  type AnalysisResult,
+  type FigureKind,
+  type RawAnalysis,
+  type RootCauseCandidate,
 } from '../../shared/analysis';
 
 export class UnreadableImageError extends Error {
@@ -31,6 +33,17 @@ export const OTHER_KNOWLEDGE_POINT = 'other';
 const clamp01 = (n: number) =>
   Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
 const text = (s: string | null | undefined) => (s ?? '').trim();
+
+/** 配图类别:认识的原样保留;写了别的说法就归入 other;没写当没有图。 */
+export function normalizeFigureKind(
+  value: string | null | undefined,
+): FigureKind {
+  const kind = text(value).toLowerCase();
+  if (kind === '') return 'none';
+  return (FIGURE_KINDS as readonly string[]).includes(kind)
+    ? (kind as FigureKind)
+    : 'other';
+}
 
 export function postprocess(
   raw: RawAnalysis,
@@ -117,6 +130,8 @@ export function postprocess(
   if (kp && ctx.knowledgePointCodes.has(kp)) knowledgePointCode = kp;
   else warnings.push('没能确定知识点,请家长选择');
 
+  const figureKind = normalizeFigureKind(raw.figure_kind);
+
   return {
     label: text(raw.label),
     questionMarkdown: question,
@@ -136,5 +151,8 @@ export function postprocess(
     rootCauses,
     recommendedRootCause,
     warnings,
+    figureKind,
+    figureNote:
+      figureKind === 'none' ? '' : text(raw.figure_note).slice(0, 200),
   };
 }

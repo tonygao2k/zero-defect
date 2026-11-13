@@ -107,6 +107,12 @@ export function ConfirmMistake(props: {
               识别到:{detail.analysis.label}
             </p>
           )}
+          {detail.analysis?.figureKind &&
+            detail.analysis.figureKind !== 'none' && (
+              <p className="text-sm text-white/70">
+                原题带图:{detail.analysis.figureNote || '(没有说明)'}
+              </p>
+            )}
           {detail.analysis?.warnings.map((w) => (
             <p
               key={w}

@@ -95,3 +95,31 @@ body {
     'liga' 0,
     'calt' 0;
 }
+
+/* 滚动条:平时隐藏,鼠标移到滚动区域上才显示,样式与界面一致。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.35);
+}
+*:hover::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.55);
+}

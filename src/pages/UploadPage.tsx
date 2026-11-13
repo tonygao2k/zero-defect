@@ -260,15 +260,15 @@ export function UploadPage(props: { onOpenLibrary: () => void }) {
                     draggable={false}
                     className="max-h-40 w-full rounded-xl object-contain"
                   />
-                  <div className="mt-2 flex items-center justify-between gap-1 text-sm">
-                    <span className="font-semibold text-mint">
+                  <div className="mt-2 space-y-2 text-sm">
+                    <span className="block whitespace-nowrap font-semibold text-mint">
                       第 {i + 1} 页
                     </span>
-                    <span className="flex gap-1">
+                    <span className="grid grid-cols-4 gap-1">
                       <button
                         type="button"
                         aria-label="上移"
-                        className={btn.small}
+                        className={`${btn.small} !px-0 whitespace-nowrap`}
                         disabled={i === 0}
                         onClick={() => move(i, i - 1)}
                       >
@@ -277,7 +277,7 @@ export function UploadPage(props: { onOpenLibrary: () => void }) {
                       <button
                         type="button"
                         aria-label="下移"
-                        className={btn.small}
+                        className={`${btn.small} !px-0 whitespace-nowrap`}
                         disabled={i === items.length - 1}
                         onClick={() => move(i, i + 1)}
                       >
@@ -285,14 +285,14 @@ export function UploadPage(props: { onOpenLibrary: () => void }) {
                       </button>
                       <button
                         type="button"
-                        className={btn.small}
+                        className={`${btn.small} !px-0 whitespace-nowrap`}
                         onClick={() => replace(i)}
                       >
                         替换
                       </button>
                       <button
                         type="button"
-                        className={btn.small}
+                        className={`${btn.small} !px-0 whitespace-nowrap`}
                         onClick={() => remove(i)}
                       >
                         删除
@@ -377,7 +377,7 @@ function Done(props: {
 
   const processing = !paper || paper.status === 'processing';
   return (
-    <div className="max-w-xl space-y-6">
+    <div className="mx-auto flex max-w-xl flex-col items-center space-y-6 text-center">
       {processing ? (
         <Waiting
           title="正在识别…"
@@ -402,7 +402,7 @@ function Done(props: {
           道,其中 {paper.pendingCount} 道待确认,请去错题库进行确认。
         </p>
       )}
-      <div className="flex gap-4">
+      <div className="flex justify-center gap-4">
         <button
           type="button"
           className={btn.primary}

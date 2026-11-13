@@ -80,6 +80,10 @@ const addMistake = (kp = 'mul_two_digit', cause = 'carry_omission') => {
     knowledgePointCode: kp,
     rootCauseCode: cause,
   });
+  // 错题确认时间固定在练习之前,避免依赖真实的当前时间。
+  repo.db
+    .prepare('UPDATE mistakes SET updated_at = ?')
+    .run(new Date(2026, 10, 1).toISOString());
 };
 
 const service = (
@@ -137,6 +141,31 @@ describe('PracticeService.start', () => {
     expect(solveCalls.length).toBeGreaterThan(0);
     for (const [o] of solveCalls)
       expect(JSON.stringify(o.messages)).not.toContain('correct_answer');
+  });
+
+  it('saves a figure, returns it, and describes it to the independent solve', async () => {
+    addMistake();
+    const bars = {
+      type: 'bar_chart',
+      unit: '人',
+      bars: [
+        { label: '一班', value: 30 },
+        { label: '二班', value: 25 },
+      ],
+    };
+    const qs = five().map((q, i) => (i === 1 ? { ...q, figure: bars } : q));
+    const chatFn = fakeChat(qs as never);
+    const session = await service(chatFn).start();
+    const withFigure = session.questions.filter((q) => q.figure);
+    expect(withFigure).toHaveLength(1);
+    expect(withFigure[0].figure).toMatchObject({ type: 'bar_chart' });
+    expect(session.questions.filter((q) => !q.figure)).toHaveLength(4);
+    // 求解请求里带有配图的文字描述,但没有答案。
+    const solveText = chatFn.mock.calls
+      .map(([o]) => String(o.messages[1].content))
+      .filter((t) => t.includes('条形统计图'));
+    expect(solveText.length).toBeGreaterThan(0);
+    expect(solveText[0]).toContain('一班:30');
   });
 
   it('drops questions whose independent solve disagrees', async () => {
@@ -352,5 +381,92 @@ describe('submit / revise / finish', () => {
     expect(mastered()).toBe(false); // 全在同一天
     await answerAll(14);
     expect(mastered()).toBe(true); // 跨了两天
+  });
+});
+
+describe('PracticeService: figures on the original mistakes', () => {
+  const addFigureMistake = (kind: string, note: string) => {
+    addMistake();
+    repo.db
+      .prepare('UPDATE mistakes SET analysis_json = ?')
+      .run(JSON.stringify({ figureKind: kind, figureNote: note }));
+  };
+
+  const generateUser = (chatFn: ReturnType<typeof fakeChat>) =>
+    String(
+      chatFn.mock.calls.find(([o]) =>
+        String(o.messages[1].content).includes('请出'),
+      )![0].messages[1].content,
+    );
+
+  it('tells the generator what kind of figure the original had', async () => {
+    addFigureMistake('cube_net', '6 个带字的格子,问哪两个字相对');
+    const chatFn = fakeChat(five());
+    await service(chatFn).start();
+    const user = generateUser(chatFn);
+    expect(user).toContain('正方体展开图');
+    expect(user).toContain('6 个带字的格子,问哪两个字相对');
+    expect(user).toContain('新题也要配同类的图');
+  });
+
+  it('asks for a text-only variant when the original figure cannot be drawn', async () => {
+    addFigureMistake('other', '两条线段首尾相接的线段图');
+    const chatFn = fakeChat(five());
+    await service(chatFn).start();
+    const user = generateUser(chatFn);
+    expect(user).toContain('画不了');
+    expect(user).not.toContain('新题也要配同类的图');
+  });
+
+  it('adds no figure hint for ordinary or legacy mistakes', async () => {
+    addMistake(); // 旧数据:analysis_json 里没有配图项
+    const chatFn = fakeChat(five());
+    await service(chatFn).start();
+    expect(generateUser(chatFn)).not.toContain('原题配有');
+  });
+});
+
+describe('PracticeService: code-verified figures are not re-solved by the model', () => {
+  it('keeps a cube-net question without asking the solver, and hints figures for old mistakes', async () => {
+    addMistake();
+    repo.db
+      .prepare(
+        "UPDATE mistakes SET question_markdown = '右面是正方体盒子的展开图,与“聚”相对的字是?'",
+      )
+      .run();
+    const net = {
+      question_markdown: '折成正方体后,与“左”相对的字是?',
+      answer_type: 'choice',
+      options: ['上', '右', '前', '后'],
+      correct_answer: 'B',
+      solution_markdown: '思路',
+      opposite_of: '左',
+      figure: {
+        type: 'cube_net',
+        cells: [
+          { row: 0, col: 1, text: '上' },
+          { row: 1, col: 0, text: '左' },
+          { row: 1, col: 1, text: '前' },
+          { row: 1, col: 2, text: '右' },
+          { row: 1, col: 3, text: '后' },
+          { row: 2, col: 1, text: '下' },
+        ],
+      },
+    };
+    const chatFn = fakeChat([net as never, ...five().slice(0, 5)]);
+    const session = await service(chatFn).start();
+    expect(session.questions.some((q) => q.figure?.type === 'cube_net')).toBe(
+      true,
+    );
+    const solvedTexts = chatFn.mock.calls
+      .map(([o]) => String(o.messages[1].content))
+      .filter((t) => !t.includes('请出'));
+    expect(solvedTexts.some((t) => t.includes('相对的字是'))).toBe(false);
+    const generateUser = String(
+      chatFn.mock.calls.find(([o]) =>
+        String(o.messages[1].content).includes('请出'),
+      )![0].messages[1].content,
+    );
+    expect(generateUser).toContain('原题配有正方体展开图');
   });
 });
