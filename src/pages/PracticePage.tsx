@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FigureView } from '../components/FigureView';
 import { Hero } from '../components/Hero';
 import { MarkdownView } from '../components/MarkdownView';
-import { Note, Waiting, btn } from '../components/ui';
+import { Note, Page, Waiting, btn } from '../components/ui';
 import { APP_DISPLAY_NAME } from '../shared/app-info';
 import type {
   PracticeQuestion,
@@ -30,13 +30,16 @@ function QuestionCard(props: {
 }) {
   const { question: q } = props;
   return (
-    <div className="rounded-3xl bg-white p-8 text-ink shadow-lg">
-      <div className="text-xl leading-relaxed">
+    <div className="@container min-w-0 rounded-3xl bg-white p-6 text-ink shadow-lg">
+      <div className="text-xl leading-relaxed [overflow-wrap:anywhere]">
         <MarkdownView>{q.questionMarkdown}</MarkdownView>
       </div>
       {q.figure && <FigureView figure={q.figure} />}
       {q.answerType === 'choice' ? (
-        <div className="mt-6 grid gap-3 sm:grid-cols-2" role="radiogroup">
+        <div
+          className="mt-6 grid gap-3 @min-[480px]:grid-cols-2"
+          role="radiogroup"
+        >
           {q.options.map((text, i) => {
             const letter = LETTERS[i];
             const on = props.value === letter;
@@ -63,7 +66,7 @@ function QuestionCard(props: {
           })}
         </div>
       ) : (
-        <label className="mt-6 flex items-center gap-3 text-lg">
+        <label className="mt-6 flex flex-wrap items-center gap-3 text-lg">
           <span className="font-semibold">答案:</span>
           <input
             value={props.value}
@@ -72,7 +75,8 @@ function QuestionCard(props: {
             inputMode="decimal"
             autoComplete="off"
             maxLength={40}
-            className="h-12 w-56 rounded-2xl bg-slate-50 px-4 text-ink outline-none ring-2 ring-slate-200 focus:ring-emerald-500 font-mono"
+            aria-label="答案"
+            className="h-12 min-w-0 w-56 max-w-full rounded-2xl bg-slate-50 px-4 text-ink outline-none ring-2 ring-slate-200 focus:ring-emerald-500 font-mono"
           />
           {q.unit && <span>{q.unit}</span>}
         </label>
@@ -141,14 +145,23 @@ export function PracticePage() {
 
   if (stage.name === 'result')
     return (
-      <div className="grid h-full place-items-center px-12">
-        <div className="max-w-xl space-y-6">
-          <h1 className="text-4xl font-semibold">已经提交!</h1>
-          <p className="text-xl">
-            正确 {stage.result.correctCount} 道题,错误 {stage.result.wrongCount}{' '}
-            道题
-          </p>
-          <div className="flex flex-wrap gap-4">
+      <Page
+        title="练习结果"
+        description="每一次练习，都在积累进步。"
+        footer={
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <button
+              type="button"
+              className={btn.secondary}
+              onClick={async () => {
+                await window.api.finishPractice({
+                  sessionId: stage.session.sessionId,
+                });
+                setStage({ name: 'home' });
+              }}
+            >
+              结束练习
+            </button>
             {stage.result.wrongCount > 0 && (
               <button
                 type="button"
@@ -164,26 +177,39 @@ export function PracticePage() {
                 修改错题
               </button>
             )}
-            <button
-              type="button"
-              className={btn.secondary}
-              onClick={async () => {
-                await window.api.finishPractice({
-                  sessionId: stage.session.sessionId,
-                });
-                setStage({ name: 'home' });
-              }}
-            >
-              结束练习
-            </button>
+          </div>
+        }
+      >
+        <section className="mx-auto max-w-2xl rounded-3xl bg-white/5 p-8 ring-1 ring-inset ring-white/10">
+          <p className="text-sm font-semibold text-mint">本次练习已完成</p>
+          <h2 className="mt-3 text-2xl font-semibold">
+            {stage.result.wrongCount === 0
+              ? '全部答对，继续保持！'
+              : '完成练习，再把错题弄明白。'}
+          </h2>
+          <div className="mt-6 grid grid-cols-2 gap-4">
+            <div className="rounded-2xl bg-mint/10 p-5">
+              <p className="text-sm text-white/60">正确</p>
+              <p className="mt-2 text-4xl font-semibold text-mint">
+                {stage.result.correctCount}
+                <span className="ml-2 text-sm font-normal">道</span>
+              </p>
+            </div>
+            <div className="rounded-2xl bg-sun/10 p-5">
+              <p className="text-sm text-white/60">待订正</p>
+              <p className="mt-2 text-4xl font-semibold text-sun">
+                {stage.result.wrongCount}
+                <span className="ml-2 text-sm font-normal">道</span>
+              </p>
+            </div>
           </div>
           {stage.result.wrongCount > 0 && (
-            <p className="text-sm text-white/60">
-              不会做也可以直接结束,这些知识点会记下来,之后还会再练。
+            <p className="mt-5 text-sm leading-relaxed text-white/60">
+              可以现在修改错题，也可以结束练习。这些知识点会记下来，之后还会再练。
             </p>
           )}
-        </div>
-      </div>
+        </section>
+      </Page>
     );
 
   if (stage.name === 'revising')
@@ -202,46 +228,99 @@ export function PracticePage() {
 
   const canStart = (stats?.practiceablePairs ?? 0) > 0;
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex flex-1 items-center justify-center gap-10 overflow-y-auto px-10">
-        <Hero />
-        <div className="max-w-md">
-          <h1 className="text-5xl font-semibold tracking-wide">智能练习</h1>
-          <p className="mt-2 text-sm text-white/60">{APP_DISPLAY_NAME}</p>
-          {stats && (
-            <ul className="mt-6 space-y-3 text-base text-white/85">
-              <li>
-                错题库规模:{stats.mistakeCount} 道题,{stats.knowledgePointCount}{' '}
-                个知识点
-              </li>
-              <li>
-                已经完成 {stats.answeredCount} 道练习题,已经掌握{' '}
-                {stats.masteredKnowledgePoints} 个知识点
-              </li>
-              <li>还剩 {stats.remainingKnowledgePoints} 个知识点未掌握</li>
-            </ul>
-          )}
+    <Page
+      title="智能练习"
+      description={APP_DISPLAY_NAME}
+      footer={
+        <div className="flex items-center justify-between gap-5">
+          <div className="min-w-0 text-sm text-white/60">
+            {error ? (
+              <Note tone="error">{error}</Note>
+            ) : stats && !canStart ? (
+              <p>
+                {stats.mistakeCount === 0
+                  ? '先上传并确认错题，就可以开始练习。'
+                  : '当前练习已完成，到了复习时间再来。'}
+              </p>
+            ) : (
+              <p>根据已确认的错题，练习需要巩固的知识点。</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={start}
+            disabled={!canStart}
+            className={btn.primary}
+          >
+            开始练习
+          </button>
         </div>
-      </div>
-      <div className="flex flex-col items-center gap-3 pb-8">
-        {error && <Note tone="error">{error}</Note>}
-        {stats && !canStart && !error && (
-          <Note tone="info">
-            {stats.mistakeCount === 0
-              ? '错题库里还没有已确认的错题,先去上传并确认吧。'
-              : '现在没有需要练习的内容,已掌握的知识点到时间会提醒复习。'}
-          </Note>
+      }
+    >
+      <div className="@container mx-auto max-w-6xl space-y-5">
+        <section className="grid items-center gap-5 rounded-3xl bg-white/5 p-6 ring-1 ring-inset ring-white/10 @min-[560px]:grid-cols-[1fr_160px] @min-[850px]:grid-cols-[1fr_260px]">
+          <div>
+            <p className="text-sm font-medium text-mint">专属巩固练习</p>
+            <h2 className="mt-3 text-2xl font-semibold leading-snug @min-[850px]:text-3xl">
+              把每一道错题，
+              <br />
+              变成下一次的进步。
+            </h2>
+            <p className="mt-4 max-w-md text-sm leading-relaxed text-white/60">
+              从错题出发，练习相似题目；完成后再订正，逐步掌握薄弱的知识点。
+            </p>
+          </div>
+          <Hero />
+        </section>
+        {stats && (
+          <section
+            aria-label="学习概况"
+            className="grid grid-cols-2 gap-4 @min-[850px]:grid-cols-4"
+          >
+            {[
+              {
+                label: '错题积累',
+                value: stats.mistakeCount,
+                unit: '道',
+                hint: `涉及 ${stats.knowledgePointCount} 个知识点`,
+              },
+              {
+                label: '累计练习',
+                value: stats.answeredCount,
+                unit: '道',
+                hint: '每一次作答都算数',
+              },
+              {
+                label: '已经掌握',
+                value: stats.masteredKnowledgePoints,
+                unit: '个',
+                hint: '知识点持续巩固',
+              },
+              {
+                label: '还需巩固',
+                value: stats.remainingKnowledgePoints,
+                unit: '个',
+                hint: '一步一步来',
+              },
+            ].map((item) => (
+              <div
+                key={item.label}
+                className="rounded-3xl bg-white/5 p-5 ring-1 ring-inset ring-white/10"
+              >
+                <p className="text-sm text-white/60">{item.label}</p>
+                <p className="mt-3 text-3xl font-semibold text-mint">
+                  {item.value}
+                  <span className="ml-2 text-xs font-normal text-white/50">
+                    {item.unit}
+                  </span>
+                </p>
+                <p className="mt-2 text-xs text-white/45">{item.hint}</p>
+              </div>
+            ))}
+          </section>
         )}
-        <button
-          type="button"
-          onClick={start}
-          disabled={!canStart}
-          className="start-btn grid h-28 w-28 place-items-center rounded-full bg-gradient-to-b from-[#b6ffd8] to-[#22c97a] text-xl font-bold text-ink ring-4 ring-white/70 transition active:scale-95 disabled:opacity-40 disabled:[animation:none]"
-        >
-          开始练习
-        </button>
       </div>
-    </div>
+    </Page>
   );
 }
 
@@ -257,71 +336,76 @@ function Answering(props: {
   const last = index === questions.length - 1;
 
   return (
-    <div className="flex h-full flex-col px-12 pb-8 pt-16">
-      <div className="flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold">练习题</h1>
-        <span className="text-xl font-semibold text-mint">
-          {index + 1}/{questions.length}
+    <Page
+      title="练习题"
+      scrollKey={q.id}
+      description="仔细读题，完成后再提交。"
+      headerExtra={
+        <span className="shrink-0 rounded-full bg-white/10 px-4 py-2 text-sm font-semibold text-mint">
+          {index + 1} / {questions.length}
         </span>
-      </div>
-      <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
+      }
+      footer={
+        <div className="flex flex-wrap justify-end gap-3">
+          <button
+            type="button"
+            className={btn.secondary}
+            disabled={index === 0}
+            onClick={() => setIndex(index - 1)}
+          >
+            上一道
+          </button>
+          {last ? (
+            <button
+              type="button"
+              className={btn.primary}
+              onClick={() => {
+                const blank = questions.filter(
+                  (x) => !(answers[x.id] ?? '').trim(),
+                );
+                if (
+                  blank.length > 0 &&
+                  !window.confirm(
+                    `还有 ${blank.length} 道题没做,确定提交吗?没做的题算错。`,
+                  )
+                )
+                  return;
+                props.onSubmit(
+                  questions.map((x) => ({
+                    questionId: x.id,
+                    answer: answers[x.id] ?? '',
+                  })),
+                );
+              }}
+            >
+              提交
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={btn.secondary}
+              onClick={() => setIndex(index + 1)}
+            >
+              下一道
+            </button>
+          )}
+        </div>
+      }
+    >
+      <div key={q.id} className="mx-auto max-w-4xl space-y-4">
         <QuestionCard
           key={q.id}
           question={q}
           value={answers[q.id] ?? ''}
           onChange={(v) => setAnswers({ ...answers, [q.id]: v })}
         />
-      </div>
-      {props.error && (
-        <div className="mt-3">
-          <Note tone="error">{props.error}</Note>
-        </div>
-      )}
-      <div className="mt-4 flex justify-center gap-6">
-        <button
-          type="button"
-          className={btn.secondary}
-          disabled={index === 0}
-          onClick={() => setIndex(index - 1)}
-        >
-          上一道
-        </button>
-        {last ? (
-          <button
-            type="button"
-            className={btn.primary}
-            onClick={() => {
-              const blank = questions.filter(
-                (x) => !(answers[x.id] ?? '').trim(),
-              );
-              if (
-                blank.length > 0 &&
-                !window.confirm(
-                  `还有 ${blank.length} 道题没做,确定提交吗?没做的题算错。`,
-                )
-              )
-                return;
-              props.onSubmit(
-                questions.map((x) => ({
-                  questionId: x.id,
-                  answer: answers[x.id] ?? '',
-                })),
-              );
-            }}
-          >
-            提交
-          </button>
-        ) : (
-          <button
-            type="button"
-            className={btn.secondary}
-            onClick={() => setIndex(index + 1)}
-          >
-            下一道
-          </button>
+        {props.error && (
+          <div className="mt-3">
+            <Note tone="error">{props.error}</Note>
+          </div>
         )}
       </div>
-    </div>
+    </Page>
   );
 }
 
@@ -360,14 +444,51 @@ function Revising(props: {
   };
 
   return (
-    <div className="flex h-full flex-col px-12 pb-8 pt-16">
-      <div className="flex items-baseline justify-between">
-        <h1 className="text-2xl font-semibold">修改错题</h1>
-        <span className="text-xl font-semibold text-mint">
-          {index + 1}/{questions.length}
+    <Page
+      title="修改错题"
+      scrollKey={q.id}
+      description="再试一次，弄明白比做得快更重要。"
+      headerExtra={
+        <span className="shrink-0 rounded-full bg-white/10 px-4 py-2 text-sm font-semibold text-mint">
+          {index + 1} / {questions.length}
         </span>
-      </div>
-      <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto">
+      }
+      footer={
+        <div className="flex flex-wrap justify-end gap-3">
+          <button
+            type="button"
+            className={`${btn.secondary} mr-auto`}
+            onClick={props.onDone}
+          >
+            结束练习
+          </button>
+          {settled ? (
+            <button type="button" className={btn.primary} onClick={next}>
+              {last ? '完成' : '下一道'}
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className={btn.secondary}
+                onClick={() => check(true)}
+              >
+                不会做
+              </button>
+              <button
+                type="button"
+                className={btn.primary}
+                disabled={!value.trim()}
+                onClick={() => check()}
+              >
+                检查
+              </button>
+            </>
+          )}
+        </div>
+      }
+    >
+      <div key={q.id} className="mx-auto max-w-4xl space-y-4">
         <QuestionCard
           key={q.id}
           question={q}
@@ -400,34 +521,6 @@ function Revising(props: {
         )}
         {error && <Note tone="error">{error}</Note>}
       </div>
-      <div className="mt-4 flex justify-center gap-6">
-        {settled ? (
-          <button type="button" className={btn.primary} onClick={next}>
-            {last ? '完成' : '下一道'}
-          </button>
-        ) : (
-          <>
-            <button
-              type="button"
-              className={btn.primary}
-              disabled={!value.trim()}
-              onClick={() => check()}
-            >
-              检查
-            </button>
-            <button
-              type="button"
-              className={btn.secondary}
-              onClick={() => check(true)}
-            >
-              不会做
-            </button>
-          </>
-        )}
-        <button type="button" className={btn.secondary} onClick={props.onDone}>
-          结束练习
-        </button>
-      </div>
-    </div>
+    </Page>
   );
 }

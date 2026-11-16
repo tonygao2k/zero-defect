@@ -49,8 +49,8 @@ export const BookIcon = make(
 
 export const GearIcon = make(
   <>
-    <circle cx="12" cy="12" r="3" />
-    <path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18" />
+    <path d="M18.85,9.78 L21.29,10.02 L21.29,13.98 L18.85,14.22 L18.42,15.27 L19.97,17.17 L17.17,19.97 L15.27,18.42 L14.22,18.85 L13.98,21.29 L10.02,21.29 L9.78,18.85 L8.73,18.42 L6.83,19.97 L4.03,17.17 L5.58,15.27 L5.15,14.22 L2.71,13.98 L2.71,10.02 L5.15,9.78 L5.58,8.73 L4.03,6.83 L6.83,4.03 L8.73,5.58 L9.78,5.15 L10.02,2.71 L13.98,2.71 L14.22,5.15 L15.27,5.58 L17.17,4.03 L19.97,6.83 L18.42,8.73 Z" />
+    <circle cx="12" cy="12" r="3.2" />
   </>,
 );
 
@@ -79,5 +79,38 @@ export const SparkIcon = make(
   <>
     <path d="M12 4v4M12 16v4M4 12h4M16 12h4" />
     <path d="m7 7 2 2M15 15l2 2M17 7l-2 2M9 15l-2 2" />
+  </>,
+);
+
+export const RotateLeftIcon = make(
+  <>
+    <path d="M4 4v5h5" />
+    <path d="M4.6 9A8 8 0 1 1 4 12" />
+  </>,
+);
+
+export const RotateRightIcon = make(
+  <>
+    <path d="M20 4v5h-5" />
+    <path d="M19.4 9A8 8 0 1 0 20 12" />
+  </>,
+);
+
+export const ArrowUpIcon = make(<path d="M12 19V5m-6 6 6-6 6 6" />);
+export const ArrowDownIcon = make(<path d="M12 5v14m-6-6 6 6 6-6" />);
+export const ReplaceIcon = make(
+  <>
+    <path d="M4 7h15m-4-4 4 4-4 4M20 17H5m4-4-4 4 4 4" />
+  </>,
+);
+export const TrashIcon = make(
+  <>
+    <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5" />
+  </>,
+);
+
+export const EditIcon = make(
+  <>
+    <path d="m15 5 4 4M4 20l4.5-1L20 7.5a2.8 2.8 0 0 0-4-4L4.5 15z" />
   </>,
 );

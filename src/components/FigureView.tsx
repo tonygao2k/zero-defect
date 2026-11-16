@@ -36,6 +36,7 @@ function CubeNet({ figure }: { figure: CubeNetFigure }) {
     <svg
       role="img"
       aria-label="正方体展开图"
+      className="h-auto max-w-full"
       width={cols * size + pad * 2}
       height={rows * size + pad * 2}
       viewBox={`0 0 ${cols * size + pad * 2} ${rows * size + pad * 2}`}
@@ -191,6 +192,7 @@ function CubeStack({ figure }: { figure: CubeStackFigure }) {
     <svg
       role="img"
       aria-label="小正方体搭成的立体图形"
+      className="h-auto max-w-full"
       width={width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}

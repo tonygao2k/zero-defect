@@ -21,10 +21,17 @@ function updateText(result: UpdateCheckResult): string {
   }
 }
 
-function Card(props: { title: string; children: React.ReactNode }) {
+function Card(props: {
+  title: string;
+  step: string;
+  children: React.ReactNode;
+}) {
   return (
-    <section className="max-w-xl rounded-3xl bg-white/10 p-6 ring-1 ring-white/15">
-      <h2 className="text-lg font-semibold">{props.title}</h2>
+    <section className="@container min-w-0 rounded-3xl bg-white/5 p-6 ring-1 ring-inset ring-white/10">
+      <h2 className="flex items-center gap-2.5 font-semibold">
+        <span className="text-xs font-medium text-mint/70">{props.step}</span>
+        {props.title}
+      </h2>
       {props.children}
     </section>
   );
@@ -64,7 +71,7 @@ function KeyCard() {
   };
 
   return (
-    <Card title={`${BAILIAN.label} API Key`}>
+    <Card step="02" title={`${BAILIAN.label} API Key`}>
       <p className="mt-1 text-sm text-white/60">
         试卷照片会发送给{BAILIAN.shortName}识别。拍照时请避开孩子的姓名和学校。
       </p>
@@ -72,7 +79,7 @@ function KeyCard() {
         API Key
         {hasKey && <span className="ml-2 text-mint">已设置</span>}
       </label>
-      <div className="mt-2 flex gap-3">
+      <div className="mt-2 space-y-3">
         <input
           id="api-key"
           type="password"
@@ -83,22 +90,24 @@ function KeyCard() {
           placeholder={hasKey ? '已保存,如需更换请重新输入' : 'sk-...'}
           className={inputClass}
         />
-        <button
-          type="button"
-          className={`${btn.secondary} shrink-0`}
-          onClick={save}
-          disabled={busy || (!input.trim() && !hasKey)}
-        >
-          {input.trim() || !hasKey ? '保存' : '清除'}
-        </button>
-        <button
-          type="button"
-          className={`${btn.secondary} shrink-0`}
-          onClick={test}
-          disabled={busy || !hasKey}
-        >
-          验证
-        </button>
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            className={`${btn.secondary} shrink-0`}
+            onClick={save}
+            disabled={busy || (!input.trim() && !hasKey)}
+          >
+            {input.trim() || !hasKey ? '保存' : '清除'}
+          </button>
+          <button
+            type="button"
+            className={`${btn.secondary} shrink-0`}
+            onClick={test}
+            disabled={busy || !hasKey}
+          >
+            验证
+          </button>
+        </div>
       </div>
       <p className="mt-2 text-xs text-white/50">
         {BAILIAN.keyHelp}
@@ -143,45 +152,51 @@ function GradeCard() {
   };
 
   return (
-    <Card title="孩子的年级">
+    <Card step="01" title="孩子的年级">
       <p className="mt-1 text-sm text-white/60">
         错题库和智能练习只使用当前年级、当前学期的错题。
       </p>
-      <div className="mt-4 flex gap-3">
-        <select
-          aria-label="年级"
-          value={settings.grade}
-          onChange={(e) => {
-            setSettings({ ...settings, grade: Number(e.target.value) });
-            setMsg(null);
-          }}
-          className={`${inputClass} appearance-none`}
-        >
-          {GRADES.map((name, i) => (
-            <option key={name} value={i + 1} className="text-ink">
-              {name}年级(人教版)
+      <div className="mt-5 grid gap-4 @min-[360px]:grid-cols-2">
+        <label className="block min-w-0">
+          <span className="mb-2 block text-sm text-white/75">年级</span>
+          <select
+            aria-label="年级"
+            value={settings.grade}
+            onChange={(e) => {
+              setSettings({ ...settings, grade: Number(e.target.value) });
+              setMsg(null);
+            }}
+            className={`${inputClass} appearance-none`}
+          >
+            {GRADES.map((name, i) => (
+              <option key={name} value={i + 1} className="text-ink">
+                {name}年级(人教版)
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block min-w-0">
+          <span className="mb-2 block text-sm text-white/75">学期</span>
+          <select
+            aria-label="学期"
+            value={settings.semester}
+            onChange={(e) => {
+              setSettings({
+                ...settings,
+                semester: Number(e.target.value) === 2 ? 2 : 1,
+              });
+              setMsg(null);
+            }}
+            className={`${inputClass} appearance-none`}
+          >
+            <option value={1} className="text-ink">
+              上学期
             </option>
-          ))}
-        </select>
-        <select
-          aria-label="学期"
-          value={settings.semester}
-          onChange={(e) => {
-            setSettings({
-              ...settings,
-              semester: Number(e.target.value) === 2 ? 2 : 1,
-            });
-            setMsg(null);
-          }}
-          className={`${inputClass} appearance-none`}
-        >
-          <option value={1} className="text-ink">
-            上学期
-          </option>
-          <option value={2} className="text-ink">
-            下学期
-          </option>
-        </select>
+            <option value={2} className="text-ink">
+              下学期
+            </option>
+          </select>
+        </label>
       </div>
       {changed && (
         <p className="mt-3 text-sm text-white/70">
@@ -221,7 +236,7 @@ function AboutCard() {
   };
 
   return (
-    <Card title="关于">
+    <Card step="03" title="关于应用">
       <p className="mt-2 text-white/75">当前版本 {version || '…'}</p>
       <div className="mt-4 flex flex-wrap items-center gap-4">
         <button
@@ -266,10 +281,10 @@ function AboutCard() {
 
 export function SettingsPage() {
   return (
-    <Page title="设置">
-      <div className="space-y-6 pb-4">
-        <KeyCard />
+    <Page title="设置" description="管理孩子的学习阶段、识别服务和应用版本。">
+      <div className="grid max-w-6xl items-start gap-5 min-[1280px]:grid-cols-2">
         <GradeCard />
+        <KeyCard />
         <AboutCard />
       </div>
     </Page>

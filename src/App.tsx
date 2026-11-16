@@ -6,6 +6,7 @@ import {
   HomeIcon,
   StarIcon,
 } from './components/Icons';
+import { APP_DISPLAY_NAME } from './shared/app-info';
 import { LibraryPage } from './pages/LibraryPage';
 import { PracticePage } from './pages/PracticePage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -31,13 +32,13 @@ function NavButton(props: {
       type="button"
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
-      className={`flex h-14 w-full items-center gap-3 rounded-2xl px-4 text-left text-[15px] font-medium transition-colors ${
+      className={`relative flex h-14 w-full items-center gap-3 rounded-2xl px-4 text-left text-[15px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[#14734f] ${
         active
-          ? 'bg-white/20 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.25)]'
-          : 'text-white/75 hover:bg-white/10 hover:text-white'
+          ? 'bg-[#d9fbe8] text-[#163d2b] shadow-[0_4px_16px_rgba(0,0,0,0.12)]'
+          : 'text-white/80 hover:bg-white/7 hover:text-white'
       }`}
     >
-      <Icon className="h-6 w-6 shrink-0" />
+      <Icon className="h-5 w-5 shrink-0" />
       {label}
     </button>
   );
@@ -48,8 +49,22 @@ export function App() {
 
   return (
     <div className="app-bg flex h-full text-white">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 px-4 pb-5 pt-16 [-webkit-app-region:drag]">
-        <nav className="space-y-2 [-webkit-app-region:no-drag]">
+      <aside
+        aria-label="应用导航"
+        className="relative z-10 flex w-64 shrink-0 flex-col border-r border-white/10 bg-black/15 px-4 pb-5 pt-16 shadow-[4px_0_20px_rgba(0,0,0,0.04)] [-webkit-app-region:drag]"
+      >
+        <div className="mb-7 flex items-center gap-3 px-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-mint/10 text-mint ring-1 ring-inset ring-mint/20">
+            <BookIcon className="h-5 w-5" />
+          </span>
+          <span className="text-sm font-semibold tracking-wide text-white/90">
+            {APP_DISPLAY_NAME}
+          </span>
+        </div>
+        <nav
+          aria-label="主导航"
+          className="space-y-2 [-webkit-app-region:no-drag]"
+        >
           {NAV.map((item) => (
             <NavButton
               key={item.id}
@@ -61,7 +76,7 @@ export function App() {
           ))}
         </nav>
 
-        <div className="mt-auto space-y-1 [-webkit-app-region:no-drag]">
+        <div className="mt-auto border-t border-white/10 pt-4 [-webkit-app-region:no-drag]">
           <NavButton
             active={page === 'settings'}
             label="设置"

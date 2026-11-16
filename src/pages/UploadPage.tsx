@@ -1,5 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { Note, Page, Waiting, btn, inputClass } from '../components/ui';
+import {
+  Note,
+  Page,
+  Waiting,
+  btn,
+  iconBtn,
+  inputClass,
+} from '../components/ui';
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  CameraIcon,
+  ReplaceIcon,
+  TrashIcon,
+} from '../components/Icons';
 import { PdfError, renderPdfPages } from '../lib/pdf';
 import type { ImageHandle } from '../shared/ipc';
 import {
@@ -155,14 +169,14 @@ export function UploadPage(props: { onOpenLibrary: () => void }) {
 
   if (step.name === 'submitting')
     return (
-      <Page title="上传错题">
+      <Page title="上传错题" scrollKey={step.name}>
         <Waiting title="正在提交…" fill />
       </Page>
     );
 
   if (step.name === 'done')
     return (
-      <Page title="上传错题">
+      <Page title="上传错题" scrollKey={step.name}>
         <Done
           paperId={step.paperId}
           title={step.title}
@@ -174,12 +188,12 @@ export function UploadPage(props: { onOpenLibrary: () => void }) {
 
   if (step.name === 'duplicate')
     return (
-      <Page title="上传错题">
-        <div className="max-w-xl space-y-6">
+      <Page title="上传错题" scrollKey={step.name}>
+        <div className="max-w-2xl space-y-6 rounded-3xl bg-white/5 p-6 ring-1 ring-inset ring-white/10">
           <p className="text-lg">
             这份试卷已经识别过了,标签是「{step.title}」,没有重复生成。
           </p>
-          <div className="flex gap-4">
+          <div className="flex flex-wrap gap-3">
             <button
               type="button"
               className={btn.primary}
@@ -197,155 +211,240 @@ export function UploadPage(props: { onOpenLibrary: () => void }) {
 
   if (step.name === 'title')
     return (
-      <Page title="上传错题">
-        <div className="max-w-xl space-y-6">
-          <p className="text-white/75">
-            共 {items.length} 页。给这份试卷起个标签,方便以后在错题库里找。
-          </p>
-          <label className="flex items-center gap-4">
-            <span className="shrink-0 text-lg">标签名称</span>
-            <input
-              value={title}
-              maxLength={PAPER_TITLE_MAX_LENGTH}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder={defaultPaperTitle()}
-              className={inputClass}
-            />
-          </label>
-          {error && <Note tone="error">{error}</Note>}
-          <div className="flex gap-4">
-            <button type="button" className={btn.primary} onClick={submit}>
-              上传错题库
-            </button>
-            <button
-              type="button"
-              className={btn.secondary}
-              onClick={cancelTitle}
-            >
-              取消
-            </button>
+      <Page
+        title="上传错题"
+        scrollKey={step.name}
+        description="最后一步，为这份试卷添加一个方便查找的标签。"
+        headerExtra={
+          <span className="shrink-0 rounded-full bg-white/10 px-3 py-1 text-xs text-mint">
+            2 / 2 · 确认上传
+          </span>
+        }
+        footer={
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-sm text-white/60">
+              共 {items.length} 页，按当前顺序识别
+            </span>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                className={btn.secondary}
+                onClick={cancelTitle}
+              >
+                返回整理
+              </button>
+              <button type="button" className={btn.primary} onClick={submit}>
+                上传并识别
+              </button>
+            </div>
           </div>
-          <p className="text-xs text-white/50">
-            照片会发送给阿里云百炼识别,标签只保存在本机。请确认没有拍到姓名、学校等个人信息。
-          </p>
+        }
+      >
+        <div className="max-w-2xl space-y-5">
+          <section className="rounded-3xl bg-white/5 p-6 ring-1 ring-inset ring-white/10">
+            <h2 className="mb-5 flex items-center gap-2.5 font-semibold">
+              <span className="text-xs text-mint/70">01</span>试卷标签
+            </h2>
+            <label className="block">
+              <span className="mb-2 block text-sm text-white/75">标签名称</span>
+              <input
+                value={title}
+                maxLength={PAPER_TITLE_MAX_LENGTH}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={defaultPaperTitle()}
+                className={inputClass}
+              />
+            </label>
+            <p className="mt-3 text-xs leading-relaxed text-white/50">
+              可以使用日期、科目或考试名称，之后在错题库里查找。
+            </p>
+          </section>
+          <div className="rounded-2xl bg-sun/10 px-5 py-4 text-sm leading-relaxed text-sun/85 ring-1 ring-inset ring-sun/20">
+            照片会发送给阿里云百炼识别，标签只保存在本机。请确认没有拍到姓名、学校等个人信息。
+          </div>
+          {error && <Note tone="error">{error}</Note>}
         </div>
       </Page>
     );
 
   return (
-    <Page title="上传错题">
-      <div className="grid h-full gap-6 lg:grid-cols-[minmax(0,280px)_1fr]">
-        <div className="min-h-0 overflow-y-auto rounded-3xl bg-white/10 p-3 ring-1 ring-white/15">
-          {items.length === 0 ? (
-            <p className="grid h-full min-h-40 place-items-center text-white/60">
-              图片列表
+    <Page
+      title="上传错题"
+      fixed
+      scrollKey={step.name}
+      description="把同一份试卷的照片或 PDF 放在一起，整理后开始识别。"
+      headerExtra={
+        <span className="shrink-0 rounded-full bg-white/10 px-3 py-1 text-xs text-mint">
+          1 / 2 · 整理试卷
+        </span>
+      }
+      footer={
+        <div className="flex items-center justify-between gap-4">
+          <div aria-live="polite">
+            <p className="text-sm text-white/80">
+              已经添加{' '}
+              <span className="font-semibold text-mint">{items.length}</span>{' '}
+              页，最多 {MAX_PAGES_PER_PAPER} 页
             </p>
-          ) : (
-            <ol className="space-y-3">
-              {items.map((it, i) => (
-                <li
-                  key={it.imageId}
-                  draggable
-                  onDragStart={() => (dragFrom.current = i)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => {
-                    if (dragFrom.current !== null) move(dragFrom.current, i);
-                    dragFrom.current = null;
-                  }}
-                  className="rounded-2xl bg-black/20 p-2 ring-1 ring-white/15"
-                >
-                  <img
-                    src={it.previewDataUrl}
-                    alt={`第 ${i + 1} 页`}
-                    draggable={false}
-                    className="max-h-40 w-full rounded-xl object-contain"
-                  />
-                  <div className="mt-2 space-y-2 text-sm">
-                    <span className="block whitespace-nowrap font-semibold text-mint">
-                      第 {i + 1} 页
-                    </span>
-                    <span className="grid grid-cols-4 gap-1">
+            <p className="mt-1 text-xs text-white/50">
+              确认页码顺序后，进入下一步。
+            </p>
+          </div>
+          <button
+            type="button"
+            className={btn.primary}
+            disabled={items.length === 0 || busyText !== ''}
+            onClick={toTitle}
+          >
+            下一步
+          </button>
+        </div>
+      }
+    >
+      <div className="flex min-h-0 flex-1 flex-col gap-5 p-1">
+        <section className="shrink-0 rounded-3xl bg-white/5 p-5 ring-1 ring-inset ring-white/10">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="min-w-0">
+              <h2 className="font-semibold">添加试卷</h2>
+              <p className="mt-2 text-sm text-white/60">
+                最多 {MAX_PAGES_PER_PAPER} 页，多页将作为同一份试卷识别。
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                className={`${btn.secondary} flex w-44 items-center justify-center gap-2`}
+                onClick={addFiles}
+                disabled={full || busyText !== ''}
+              >
+                <span aria-hidden="true">＋</span>图片或 PDF
+              </button>
+              <button
+                type="button"
+                className={`${btn.secondary} flex w-44 items-center justify-center gap-2`}
+                onClick={paste}
+                disabled={full || busyText !== ''}
+              >
+                <span aria-hidden="true">＋</span>粘贴截图
+              </button>
+            </div>
+          </div>
+          {full && (
+            <div className="mt-3">
+              <Note tone="info">
+                已经 {MAX_PAGES_PER_PAPER} 页了，再多请分次提交。
+              </Note>
+            </div>
+          )}
+          {busyText && (
+            <div className="mt-5">
+              <Waiting title={busyText} />
+            </div>
+          )}
+          {error && (
+            <div className="mt-3">
+              <Note tone="error">{error}</Note>
+            </div>
+          )}
+        </section>
+
+        <section aria-label="试卷页面" className="flex min-h-0 flex-1 flex-col">
+          <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-2">
+            <h2 className="font-semibold">整理页码</h2>
+            <p className="text-xs text-white/50">拖动卡片或使用箭头调整顺序</p>
+          </div>
+          <div className="@container min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2 pb-1">
+            {items.length === 0 ? (
+              <div className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-3xl border border-dashed border-white/20 bg-white/5 p-6 text-center">
+                <CameraIcon className="h-9 w-9 text-mint/60" />
+                <p className="text-sm text-white/80">先添加第一张试卷</p>
+                <p className="text-xs text-white/50">
+                  会识别图片中做错或未作答的题目。
+                </p>
+              </div>
+            ) : (
+              <ol className="grid grid-cols-2 gap-4 @min-[850px]:grid-cols-3">
+                {items.map((it, i) => (
+                  <li
+                    key={it.imageId}
+                    draggable={busyText === ''}
+                    onDragStart={() => (dragFrom.current = i)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (dragFrom.current !== null && !busyText)
+                        move(dragFrom.current, i);
+                      dragFrom.current = null;
+                    }}
+                    className="min-w-0 rounded-3xl bg-white/5 p-3 ring-1 ring-inset ring-white/10"
+                  >
+                    <div className="mb-3 flex items-center justify-between gap-2 px-1">
+                      <span className="text-sm font-semibold text-mint">
+                        第 {i + 1} 页
+                      </span>
+                      <span className="text-xs text-white/40">
+                        {i + 1} / {items.length}
+                      </span>
+                    </div>
+                    <div className="rounded-2xl bg-black/15 p-2">
+                      <img
+                        src={it.previewDataUrl}
+                        alt={`第 ${i + 1} 页`}
+                        draggable={false}
+                        className="h-40 w-full rounded-lg object-contain"
+                      />
+                    </div>
+                    <div
+                      className="mt-3 flex justify-center gap-2"
+                      role="group"
+                      aria-label={`第 ${i + 1} 页操作`}
+                    >
                       <button
                         type="button"
                         aria-label="上移"
-                        className={`${btn.small} !px-0 whitespace-nowrap`}
-                        disabled={i === 0}
+                        title="上移一页"
+                        className={iconBtn}
+                        disabled={i === 0 || busyText !== ''}
                         onClick={() => move(i, i - 1)}
                       >
-                        ↑
+                        <ArrowUpIcon className="h-4 w-4" />
                       </button>
                       <button
                         type="button"
                         aria-label="下移"
-                        className={`${btn.small} !px-0 whitespace-nowrap`}
-                        disabled={i === items.length - 1}
+                        title="下移一页"
+                        className={iconBtn}
+                        disabled={i === items.length - 1 || busyText !== ''}
                         onClick={() => move(i, i + 1)}
                       >
-                        ↓
+                        <ArrowDownIcon className="h-4 w-4" />
                       </button>
                       <button
                         type="button"
-                        className={`${btn.small} !px-0 whitespace-nowrap`}
+                        aria-label="替换"
+                        title="替换图片"
+                        className={iconBtn}
+                        disabled={busyText !== ''}
                         onClick={() => replace(i)}
                       >
-                        替换
+                        <ReplaceIcon className="h-4 w-4" />
                       </button>
                       <button
                         type="button"
-                        className={`${btn.small} !px-0 whitespace-nowrap`}
+                        aria-label="删除"
+                        title="删除这一页"
+                        className={iconBtn}
+                        disabled={busyText !== ''}
                         onClick={() => remove(i)}
                       >
-                        删除
+                        <TrashIcon className="h-4 w-4" />
                       </button>
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-
-        <div className="flex min-h-0 flex-col gap-5">
-          <p className="text-white/75">
-            添加试卷的照片或 PDF(最多 {MAX_PAGES_PER_PAPER} 页,按页码顺序)。
-            只传一张就识别这张上所有的错题和没做的题;传多张会当作同一份试卷一起识别。
-          </p>
-          <div className="flex flex-wrap gap-4">
-            <button
-              type="button"
-              className={btn.secondary}
-              onClick={addFiles}
-              disabled={full || busyText !== ''}
-            >
-              ＋ 添加图片或 PDF
-            </button>
-            <button
-              type="button"
-              className={btn.secondary}
-              onClick={paste}
-              disabled={full || busyText !== ''}
-            >
-              ＋ 添加粘贴截图
-            </button>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
-          {full && (
-            <Note tone="info">
-              已经 {MAX_PAGES_PER_PAPER} 页了,再多请分次提交。
-            </Note>
-          )}
-          {busyText && <Waiting title={busyText} />}
-          {error && <Note tone="error">{error}</Note>}
-          <div className="mt-auto flex justify-end">
-            <button
-              type="button"
-              className={btn.primary}
-              disabled={items.length === 0 || busyText !== ''}
-              onClick={toTitle}
-            >
-              结束
-            </button>
-          </div>
-        </div>
+        </section>
       </div>
     </Page>
   );
@@ -377,7 +476,7 @@ function Done(props: {
 
   const processing = !paper || paper.status === 'processing';
   return (
-    <div className="mx-auto flex max-w-xl flex-col items-center space-y-6 text-center">
+    <div className="mx-auto flex max-w-2xl flex-col items-center space-y-6 rounded-3xl bg-white/5 p-8 text-center ring-1 ring-inset ring-white/10">
       {processing ? (
         <Waiting
           title="正在识别…"
@@ -402,7 +501,7 @@ function Done(props: {
           道,其中 {paper.pendingCount} 道待确认,请去错题库进行确认。
         </p>
       )}
-      <div className="flex justify-center gap-4">
+      <div className="flex flex-wrap justify-center gap-3">
         <button
           type="button"
           className={btn.primary}

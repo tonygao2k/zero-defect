@@ -1,11 +1,8 @@
 /** 首页插画:一块带对勾的"消除板",对应参考图里的立体主视觉。 */
 export function Hero() {
   return (
-    <div className="hero-float" aria-hidden="true">
-      <svg
-        viewBox="0 0 420 380"
-        className="h-[340px] w-[380px] drop-shadow-2xl"
-      >
+    <div className="hero-float mx-auto w-full max-w-[260px]" aria-hidden="true">
+      <svg viewBox="0 0 420 380" className="h-auto w-full drop-shadow-2xl">
         <defs>
           <linearGradient id="board" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0" stopColor="#c9ffe2" />
