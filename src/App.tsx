@@ -56,18 +56,21 @@ export function App() {
         aria-label="应用导航"
         className="relative z-10 flex w-64 shrink-0 flex-col border-r border-white/10 bg-black/15 px-4 pb-5 pt-16 shadow-[4px_0_20px_rgba(0,0,0,0.04)] "
       >
-        <div aria-label={APP_DISPLAY_NAME} className="relative mb-10 px-3 py-2">
+        <div
+          aria-label={APP_DISPLAY_NAME}
+          className="brand-panel relative mb-8 overflow-hidden rounded-[26px] p-3"
+        >
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full bg-mint/20 blur-2xl"
+            className="brand-panel-glow pointer-events-none absolute -right-10 -top-12 h-32 w-32 rounded-full bg-mint/25 blur-3xl"
           />
           <div className="relative flex items-center gap-3">
-            <span className="brand-mark grid h-14 w-14 shrink-0 place-items-center rounded-[19px] shadow-[0_8px_24px_rgba(2,45,31,0.3)]">
+            <span className="brand-mark grid h-15 w-15 shrink-0 place-items-center rounded-[21px] shadow-[0_8px_24px_rgba(2,45,31,0.34)]">
               <img
                 src={logoPic}
                 alt=""
                 draggable={false}
-                className="h-12 w-10 object-contain"
+                className="h-13 w-11 object-contain"
               />
             </span>
             <span className="min-w-0 flex-1">
@@ -75,9 +78,9 @@ export function App() {
                 src={logoText}
                 alt={APP_DISPLAY_NAME}
                 draggable={false}
-                className="brand-wordmark block h-auto w-24 max-w-full"
+                className="brand-wordmark block h-auto w-20 max-w-full"
               />
-              <span className="mt-1 block whitespace-nowrap text-[14px] tracking-[0.16em] text-mint/80">
+              <span className="mt-1.5 inline-flex rounded-full bg-mint/10 px-2 py-0.5 text-[12px] font-medium tracking-[0.12em] text-mint/85">
                 AI 学习助手
               </span>
             </span>
