@@ -26,7 +26,7 @@ npm run build         # 当前平台的 Tauri 包
 npm run package       # 只生成未打包的应用目录
 ```
 
-`npm run build`（或 `npm run make`）成功后，会自动将最终应用和安装包复制到项目根目录的 `release/`，例如 `release/错了吗.app` 和 `release/错了吗_1.0.0_x64.dmg`。编译缓存仍保留在 Tauri 默认目录，`release/` 不提交到 Git。
+`npm run build`（或 `npm run make`）成功后，会自动将最终应用和安装包复制到项目根目录的 `release/`，例如 `release/错了吗.app` 和 `release/zero-defect_1.0.1_x64.dmg`。安装包文件名统一使用 `package.json` 中的英文包名 `zero-defect`，避免 GitHub Release 上传时过滤中文名称；应用显示名称仍为“错了吗”。编译缓存仍保留在 Tauri 默认目录，`release/` 不提交到 Git。
 
 macOS 制作 DMG 时如果遇到 Finder AppleEvent 超时，可用 `CI=true npm run build` 重试，同样会自动整理到 `release/`。
 

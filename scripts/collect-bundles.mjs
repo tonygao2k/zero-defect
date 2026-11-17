@@ -6,6 +6,9 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const { productName, version } = JSON.parse(
   await readFile(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'),
 );
+const { name: packageName } = JSON.parse(
+  await readFile(path.join(root, 'package.json'), 'utf8'),
+);
 const bundleDir = path.join(root, 'src-tauri/target/release/bundle');
 const outputDir = path.join(root, 'release');
 const formats = ['macos', 'dmg', 'nsis', 'msi', 'deb', 'rpm', 'appimage'];
@@ -27,7 +30,10 @@ for (const format of formats) {
       /\.(dmg|exe|msi|deb|rpm|AppImage)$/i.test(entry.name);
     if (!isApp && !isInstaller) continue;
     await mkdir(outputDir, { recursive: true });
-    const destination = path.join(outputDir, entry.name);
+    const outputName = isInstaller
+      ? `${packageName}${entry.name.slice(productName.length)}`
+      : entry.name;
+    const destination = path.join(outputDir, outputName);
     await cp(path.join(sourceDir, entry.name), destination, {
       recursive: true,
     });
