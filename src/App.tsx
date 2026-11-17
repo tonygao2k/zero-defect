@@ -50,8 +50,9 @@ export function App() {
   return (
     <div className="app-bg flex h-full text-white">
       <aside
+        data-tauri-drag-region="deep"
         aria-label="应用导航"
-        className="relative z-10 flex w-64 shrink-0 flex-col border-r border-white/10 bg-black/15 px-4 pb-5 pt-16 shadow-[4px_0_20px_rgba(0,0,0,0.04)] [-webkit-app-region:drag]"
+        className="relative z-10 flex w-64 shrink-0 flex-col border-r border-white/10 bg-black/15 px-4 pb-5 pt-16 shadow-[4px_0_20px_rgba(0,0,0,0.04)] "
       >
         <div className="mb-7 flex items-center gap-3 px-3">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-mint/10 text-mint ring-1 ring-inset ring-mint/20">
@@ -61,10 +62,7 @@ export function App() {
             {APP_DISPLAY_NAME}
           </span>
         </div>
-        <nav
-          aria-label="主导航"
-          className="space-y-2 [-webkit-app-region:no-drag]"
-        >
+        <nav aria-label="主导航" className="space-y-2 ">
           {NAV.map((item) => (
             <NavButton
               key={item.id}
@@ -76,7 +74,7 @@ export function App() {
           ))}
         </nav>
 
-        <div className="mt-auto border-t border-white/10 pt-4 [-webkit-app-region:no-drag]">
+        <div className="mt-auto border-t border-white/10 pt-4 ">
           <NavButton
             active={page === 'settings'}
             label="设置"
@@ -87,7 +85,7 @@ export function App() {
       </aside>
 
       <main className="relative min-w-0 flex-1">
-        <div className="absolute inset-x-0 top-0 h-10 [-webkit-app-region:drag]" />
+        <div data-tauri-drag-region className="absolute inset-x-0 top-0 h-10" />
         {page === 'practice' && <PracticePage />}
         {/* 上传页常驻挂载只做隐藏:切换页签时已添加的图片不会丢。 */}
         <div className="h-full" hidden={page !== 'upload'}>

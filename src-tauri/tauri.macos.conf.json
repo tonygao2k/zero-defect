@@ -1,0 +1,24 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "超级错题本",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 960,
+        "minHeight": 620,
+        "center": true,
+        "backgroundColor": "#0a4a35",
+        "dragDropEnabled": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 20,
+          "y": 20
+        },
+        "create": false
+      }
+    ]
+  }
+}

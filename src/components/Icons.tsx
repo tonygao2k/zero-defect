@@ -98,6 +98,7 @@ export const RotateRightIcon = make(
 
 export const ArrowUpIcon = make(<path d="M12 19V5m-6 6 6-6 6 6" />);
 export const ArrowDownIcon = make(<path d="M12 5v14m-6-6 6 6 6-6" />);
+export const ChevronDownIcon = make(<path d="m6.5 9 5.5 5.5L17.5 9" />);
 export const ReplaceIcon = make(
   <>
     <path d="M4 7h15m-4-4 4 4-4 4M20 17H5m4-4-4 4 4 4" />

@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConfirmMistake } from '../components/ConfirmMistake';
 import { MarkdownView } from '../components/MarkdownView';
-import { BookIcon, EditIcon, TrashIcon } from '../components/Icons';
+import {
+  BookIcon,
+  ChevronDownIcon,
+  EditIcon,
+  TrashIcon,
+} from '../components/Icons';
 import {
   Note,
   Page,
+  ScrollArea,
   Waiting,
   btn,
   iconBtn,
@@ -196,13 +202,13 @@ export function LibraryPage() {
       description="按试卷查看错题，核对答案与错误原因。"
       fixed
       headerExtra={
-        <label className="flex shrink-0 items-center gap-2 text-sm text-white/65">
+        <label className="relative flex shrink-0 items-center text-sm text-white/65">
           <span className="sr-only">学期范围</span>
           <select
             aria-label="学期范围"
             value={allTerms ? 'all' : 'current'}
             onChange={(e) => setAllTerms(e.target.value === 'all')}
-            className="h-9 rounded-full bg-white/10 px-3 text-sm text-white/80 outline-none ring-1 ring-inset ring-white/15 focus-visible:ring-mint"
+            className="h-10 appearance-none rounded-full bg-white/10 px-4 pr-10 text-sm font-medium text-white/85 outline-none ring-1 ring-inset ring-white/15 transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-mint"
           >
             <option value="current" className="text-ink">
               当前学期
@@ -211,6 +217,7 @@ export function LibraryPage() {
               全部学期
             </option>
           </select>
+          <ChevronDownIcon className="pointer-events-none absolute right-3 h-4 w-4 text-white/60" />
         </label>
       }
     >
@@ -223,9 +230,10 @@ export function LibraryPage() {
             <h2 className="text-sm font-semibold text-white/85">我的试卷</h2>
             <span className="text-xs text-white/45">{papers.length} 份</span>
           </div>
-          <nav
+          <ScrollArea
             aria-label="试卷列表"
-            className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3"
+            className="min-h-0 flex-1"
+            contentClassName="overflow-y-auto overscroll-contain px-2 pb-3"
           >
             <ul className="space-y-1.5">
               {papers.map((p) => (
@@ -266,7 +274,7 @@ export function LibraryPage() {
                 上传试卷后，会在这里按试卷整理。
               </p>
             )}
-          </nav>
+          </ScrollArea>
         </aside>
 
         <section
@@ -425,7 +433,7 @@ export function LibraryPage() {
                 </div>
               )}
 
-              <div
+              <ScrollArea
                 ref={listRef}
                 role="region"
                 aria-label="错题列表"
@@ -433,7 +441,8 @@ export function LibraryPage() {
                   paper.status === 'done' && loadingMistakes && !loadError
                 }
                 tabIndex={0}
-                className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-3xl bg-black/10 p-1 outline-none ring-1 ring-inset ring-white/10 focus-visible:ring-mint"
+                className="min-h-0 flex-1 rounded-3xl bg-black/10 outline-none ring-1 ring-inset ring-white/10 focus-visible:ring-mint"
+                contentClassName="overflow-y-auto overscroll-contain rounded-3xl p-1"
               >
                 {paper.status === 'processing' ? (
                   <div className="flex min-h-full items-center justify-center p-6">
@@ -505,7 +514,7 @@ export function LibraryPage() {
                     ))}
                   </ul>
                 )}
-              </div>
+              </ScrollArea>
             </>
           )}
         </section>

@@ -1,0 +1,52 @@
+[package]
+name = "zero-defect"
+version = "1.0.0"
+description = "超级错题本"
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "zero_defect"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.38", features = ["bundled", "backup"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
+tokio = { version = "1", features = ["time", "sync"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = [
+  "jpeg",
+  "png",
+  "gif",
+  "bmp",
+  "webp",
+] }
+arboard = { version = "3", features = ["image-data"] }
+rfd = "0.17"
+open = "5"
+regex = "1"
+unicode-normalization = "0.1"
+heic-rs = { version = "0.1.4", default-features = false, features = ["std"] }
+atomicwrites = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true

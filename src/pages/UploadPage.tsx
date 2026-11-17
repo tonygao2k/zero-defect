@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Note,
   Page,
+  ScrollArea,
   Waiting,
   btn,
   iconBtn,
@@ -353,7 +354,10 @@ export function UploadPage(props: { onOpenLibrary: () => void }) {
             <h2 className="font-semibold">整理页码</h2>
             <p className="text-xs text-white/50">拖动卡片或使用箭头调整顺序</p>
           </div>
-          <div className="@container min-h-0 flex-1 overflow-y-auto overscroll-contain pr-2 pb-1">
+          <ScrollArea
+            className="@container min-h-0 flex-1"
+            contentClassName="overflow-y-auto overscroll-contain pr-2 pb-1"
+          >
             {items.length === 0 ? (
               <div className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-3xl border border-dashed border-white/20 bg-white/5 p-6 text-center">
                 <CameraIcon className="h-9 w-9 text-mint/60" />
@@ -443,7 +447,7 @@ export function UploadPage(props: { onOpenLibrary: () => void }) {
                 ))}
               </ol>
             )}
-          </div>
+          </ScrollArea>
         </section>
       </div>
     </Page>

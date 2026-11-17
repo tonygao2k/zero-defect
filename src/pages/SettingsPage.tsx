@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
+import { ChevronDownIcon } from '../components/Icons';
 import { Note, Page, btn, inputClass } from '../components/ui';
 import { BAILIAN } from '../shared/bailian';
-import type { UpdateCheckResult } from '../shared/ipc';
+import type { AiConfig, UpdateCheckResult } from '../shared/ipc';
 import type { Settings } from '../shared/settings';
 
 const GRADES = ['一', '二', '三', '四', '五', '六'];
@@ -159,43 +160,49 @@ function GradeCard() {
       <div className="mt-5 grid gap-4 @min-[360px]:grid-cols-2">
         <label className="block min-w-0">
           <span className="mb-2 block text-sm text-white/75">年级</span>
-          <select
-            aria-label="年级"
-            value={settings.grade}
-            onChange={(e) => {
-              setSettings({ ...settings, grade: Number(e.target.value) });
-              setMsg(null);
-            }}
-            className={`${inputClass} appearance-none`}
-          >
-            {GRADES.map((name, i) => (
-              <option key={name} value={i + 1} className="text-ink">
-                {name}年级(人教版)
-              </option>
-            ))}
-          </select>
+          <div className="relative">
+            <select
+              aria-label="年级"
+              value={settings.grade}
+              onChange={(e) => {
+                setSettings({ ...settings, grade: Number(e.target.value) });
+                setMsg(null);
+              }}
+              className={`${inputClass} appearance-none pr-11`}
+            >
+              {GRADES.map((name, i) => (
+                <option key={name} value={i + 1} className="text-ink">
+                  {name}年级(人教版)
+                </option>
+              ))}
+            </select>
+            <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/60" />
+          </div>
         </label>
         <label className="block min-w-0">
           <span className="mb-2 block text-sm text-white/75">学期</span>
-          <select
-            aria-label="学期"
-            value={settings.semester}
-            onChange={(e) => {
-              setSettings({
-                ...settings,
-                semester: Number(e.target.value) === 2 ? 2 : 1,
-              });
-              setMsg(null);
-            }}
-            className={`${inputClass} appearance-none`}
-          >
-            <option value={1} className="text-ink">
-              上学期
-            </option>
-            <option value={2} className="text-ink">
-              下学期
-            </option>
-          </select>
+          <div className="relative">
+            <select
+              aria-label="学期"
+              value={settings.semester}
+              onChange={(e) => {
+                setSettings({
+                  ...settings,
+                  semester: Number(e.target.value) === 2 ? 2 : 1,
+                });
+                setMsg(null);
+              }}
+              className={`${inputClass} appearance-none pr-11`}
+            >
+              <option value={1} className="text-ink">
+                上学期
+              </option>
+              <option value={2} className="text-ink">
+                下学期
+              </option>
+            </select>
+            <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/60" />
+          </div>
         </label>
       </div>
       {changed && (
@@ -279,12 +286,58 @@ function AboutCard() {
   );
 }
 
+function ModelCard() {
+  const [config, setConfig] = useState<AiConfig | null>(null);
+
+  useEffect(() => {
+    void window.api.getAiConfig().then(setConfig);
+  }, []);
+
+  return (
+    <Card step="03" title="AI 模型">
+      <p className="mt-1 text-sm text-white/60">
+        当前识别和练习使用的模型由应用配置统一管理。
+      </p>
+      {config ? (
+        <dl className="mt-5 grid gap-3 text-sm @min-[520px]:grid-cols-2">
+          <div className="rounded-2xl bg-black/15 px-4 py-3 ring-1 ring-inset ring-white/10">
+            <dt className="text-xs text-white/50">试卷识别与归因</dt>
+            <dd className="mt-1 break-all font-medium text-mint">
+              {config.recognitionModel}
+            </dd>
+          </div>
+          <div className="rounded-2xl bg-black/15 px-4 py-3 ring-1 ring-inset ring-white/10">
+            <dt className="text-xs text-white/50">智能练习生成</dt>
+            <dd className="mt-1 break-all font-medium text-mint">
+              {config.practiceModel}
+            </dd>
+          </div>
+          <div className="rounded-2xl bg-black/15 px-4 py-3 ring-1 ring-inset ring-white/10 @min-[520px]:col-span-2">
+            <dt className="text-xs text-white/50">练习答案校验</dt>
+            <dd className="mt-1 break-all font-medium text-mint">
+              {config.verificationModel}
+            </dd>
+          </div>
+        </dl>
+      ) : (
+        <p className="mt-5 text-sm text-white/50">正在读取模型配置…</p>
+      )}
+      {config && (
+        <p className="mt-4 text-xs text-white/45">
+          服务商：{config.provider} · {config.displayName}
+        </p>
+      )}
+    </Card>
+  );
+}
+
 export function SettingsPage() {
   return (
     <Page title="设置" description="管理孩子的学习阶段、识别服务和应用版本。">
       <div className="grid max-w-6xl items-start gap-5 min-[1280px]:grid-cols-2">
         <GradeCard />
         <KeyCard />
+        <ModelCard />
         <AboutCard />
       </div>
     </Page>

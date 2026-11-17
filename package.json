@@ -10,39 +10,34 @@
     "name": "TonyGao",
     "email": "tonygao2k@hotmail.com"
   },
-  "main": ".vite/build/main.cjs",
   "scripts": {
-    "start": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
-    "release": "electron-forge release",
+    "start": "tauri dev",
+    "dev:web": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build:web": "tsc --noEmit && vite build",
+    "build": "tauri build",
+    "package": "tauri build --no-bundle",
+    "make": "tauri build",
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "lint": "oxlint && oxfmt --check",
     "lint:fix": "oxlint --fix && oxfmt --write",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@electron-forge/cli": "^8.0.1",
-    "@electron-forge/maker-zip": "^8.0.1",
-    "@electron-forge/plugin-auto-unpack-natives": "^8.0.1",
-    "@electron-forge/plugin-fuses": "^8.0.1",
-    "@electron-forge/plugin-vite": "^8.0.1",
-    "@electron/fuses": "^2.1.3",
-    "@electron/rebuild": "^4.2.1",
     "@tailwindcss/vite": "^4.3.5",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.2.1",
-    "electron": "45.2.3",
     "oxfmt": "^0.41.0",
     "oxlint": "^1.92.0",
     "tailwindcss": "^4.3.5",
     "typescript": "^6.0.3",
     "vite": "^8.3.6",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "@tauri-apps/cli": "^2"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
     "fraction.js": "^5.3.4",
     "katex": "^0.19.1",
     "pdfjs-dist": "^6.5.438",
@@ -51,9 +46,7 @@
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
     "remark-math": "^6.0.0",
-    "zod": "^4.6.7"
-  },
-  "allowScripts": {
-    "better-sqlite3@13.0.3": true
+    "zod": "^4.6.7",
+    "@tauri-apps/api": "^2"
   }
 }

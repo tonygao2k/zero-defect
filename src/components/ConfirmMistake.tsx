@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { MistakeDetail, Taxonomy } from '../shared/ipc';
 import type { EditableFields } from '../shared/mistakes';
 import { RotateLeftIcon, RotateRightIcon } from './Icons';
-import { btn } from './ui';
+import { ScrollArea, btn } from './ui';
 
 type Fields = Omit<EditableFields, 'mistakeId'>;
 
@@ -156,7 +156,10 @@ export function ConfirmMistake(props: {
       </header>
 
       {/* 详情只有这一个滚动容器；原图随内容停靠，原因选项自然展开。 */}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-3 pb-3 [container-type:size]">
+      <ScrollArea
+        className="min-h-0 flex-1"
+        contentClassName="overflow-y-auto overscroll-contain pr-3 pb-3 [container-type:size]"
+      >
         <div className="grid items-start gap-6 min-[900px]:grid-cols-[minmax(220px,0.8fr)_minmax(0,1.4fr)]">
           <aside
             aria-label="原始试卷"
@@ -307,7 +310,7 @@ export function ConfirmMistake(props: {
             </fieldset>
           </div>
         </div>
-      </div>
+      </ScrollArea>
 
       <footer className="mt-4 shrink-0 border-t border-white/15 pt-4">
         {error && (
