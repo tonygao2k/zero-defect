@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import logoPic from './assets/brand/logo_pic.png';
+import logoText from './assets/brand/logo_text.png';
 import {
   BookIcon,
   CameraIcon,
@@ -54,13 +56,32 @@ export function App() {
         aria-label="应用导航"
         className="relative z-10 flex w-64 shrink-0 flex-col border-r border-white/10 bg-black/15 px-4 pb-5 pt-16 shadow-[4px_0_20px_rgba(0,0,0,0.04)] "
       >
-        <div className="mb-7 flex items-center gap-3 px-3">
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-mint/10 text-mint ring-1 ring-inset ring-mint/20">
-            <BookIcon className="h-5 w-5" />
-          </span>
-          <span className="text-sm font-semibold tracking-wide text-white/90">
-            {APP_DISPLAY_NAME}
-          </span>
+        <div aria-label={APP_DISPLAY_NAME} className="relative mb-10 px-3 py-2">
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full bg-mint/20 blur-2xl"
+          />
+          <div className="relative flex items-center gap-3">
+            <span className="brand-mark grid h-14 w-14 shrink-0 place-items-center rounded-[19px] shadow-[0_8px_24px_rgba(2,45,31,0.3)]">
+              <img
+                src={logoPic}
+                alt=""
+                draggable={false}
+                className="h-12 w-10 object-contain"
+              />
+            </span>
+            <span className="min-w-0 flex-1">
+              <img
+                src={logoText}
+                alt={APP_DISPLAY_NAME}
+                draggable={false}
+                className="brand-wordmark block h-auto w-24 max-w-full"
+              />
+              <span className="mt-1 block whitespace-nowrap text-[14px] tracking-[0.16em] text-mint/80">
+                AI 学习助手
+              </span>
+            </span>
+          </div>
         </div>
         <nav aria-label="主导航" className="space-y-2 ">
           {NAV.map((item) => (

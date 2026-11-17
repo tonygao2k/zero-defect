@@ -58,6 +58,20 @@ body {
     linear-gradient(135deg, #12915a 0%, #0a6a45 38%, #064430 70%, #022a22 100%);
 }
 
+.brand-mark {
+  background:
+    linear-gradient(
+      145deg,
+      rgba(226, 255, 239, 0.98),
+      rgba(125, 240, 180, 0.82)
+    ),
+    #b6ffd8;
+}
+
+.brand-wordmark {
+  filter: brightness(0) invert(1) drop-shadow(0 2px 6px rgba(0, 35, 24, 0.22));
+}
+
 @keyframes float {
   0%,
   100% {

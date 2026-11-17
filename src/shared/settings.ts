@@ -9,6 +9,9 @@ export const SettingsSchema = z.object({
   semester: z.union([z.literal(1), z.literal(2)]).default(1),
   curriculumId: z.string().min(1).default('pep_primary_math'),
   confidenceThreshold: z.number().min(0).max(1).default(0.7),
+  practiceDifficulty: z
+    .union([z.literal('easy'), z.literal('medium'), z.literal('hard')])
+    .default('medium'),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

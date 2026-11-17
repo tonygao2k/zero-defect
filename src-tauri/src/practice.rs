@@ -5,7 +5,7 @@ use crate::{
     figure,
     mastery::{self, Pair},
     repo,
-    state::{AppState, Inner},
+    state::{AppState, Inner, PracticeDifficulty},
 };
 use regex::Regex;
 use serde_json::{json, Value};
@@ -165,8 +165,9 @@ pub async fn start(state: &AppState) -> AppResult<Value> {
         let state = state.clone();
         let key = key.clone();
         let grade = settings.grade;
+        let difficulty = settings.practice_difficulty.clone();
         tasks.push(tauri::async_runtime::spawn(async move {
-            make_questions(&state, &pair, count, &key, grade).await
+            make_questions(&state, &pair, count, &key, grade, &difficulty).await
         }));
     }
     let mut groups = Vec::new();
@@ -200,6 +201,7 @@ async fn make_questions(
     count: usize,
     key: &str,
     grade: i64,
+    difficulty: &PracticeDifficulty,
 ) -> AppResult<Vec<Question>> {
     let (info, examples, avoid) = {
         let i = state.lock()?;
@@ -247,7 +249,8 @@ async fn make_questions(
         .join("\n");
     let system = include_str!("../assets/practice-prompt.txt")
         .replace("{{grade}}", &grade.to_string())
-        .replace("{{count}}", &count.to_string());
+        .replace("{{count}}", &count.to_string())
+        .replace("{{difficulty}}", difficulty.prompt_text());
     let user=format!("知识点:{}\n错误原因:{}。{}\n孩子做错的题:\n{examples}\n以下题目之前已经出过,不要重复:\n{avoid}\n请出 {count} 道新题。",text(&info,"kp"),text(&info,"cause"),text(&info,"description"));
     let messages = json!([{"role":"system","content":system},{"role":"user","content":user}]);
     let mut drafts = Vec::new();

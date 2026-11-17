@@ -14,6 +14,30 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PracticeDifficulty {
+    Easy,
+    Medium,
+    Hard,
+}
+
+impl Default for PracticeDifficulty {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
+impl PracticeDifficulty {
+    pub fn prompt_text(&self) -> &'static str {
+        match self {
+            Self::Easy => "容易：以基础概念和直接计算为主，步骤少，数字简单，让孩子能够独立完成。",
+            Self::Medium => "适中：需要一到两步思考或计算，结合常见应用情境，但不超出孩子年级范围。",
+            Self::Hard => "困难：在当前知识点内增加综合应用、变式或多步推理，允许有一定挑战，但不能超纲。",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -21,6 +45,7 @@ pub struct Settings {
     pub semester: i64,
     pub curriculum_id: String,
     pub confidence_threshold: f64,
+    pub practice_difficulty: PracticeDifficulty,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -29,6 +54,7 @@ impl Default for Settings {
             semester: 1,
             curriculum_id: "pep_primary_math".into(),
             confidence_threshold: 0.7,
+            practice_difficulty: PracticeDifficulty::Medium,
         }
     }
 }

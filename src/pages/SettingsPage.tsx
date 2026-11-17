@@ -6,6 +6,11 @@ import type { AiConfig, UpdateCheckResult } from '../shared/ipc';
 import type { Settings } from '../shared/settings';
 
 const GRADES = ['一', '二', '三', '四', '五', '六'];
+const PRACTICE_DIFFICULTIES = [
+  { value: 'easy', label: '容易' },
+  { value: 'medium', label: '适中' },
+  { value: 'hard', label: '困难' },
+] as const;
 
 type Msg = { tone: 'ok' | 'error' | 'info'; text: string } | null;
 
@@ -24,15 +29,11 @@ function updateText(result: UpdateCheckResult): string {
 
 function Card(props: {
   title: string;
-  step: string;
   children: React.ReactNode;
 }) {
   return (
     <section className="@container min-w-0 rounded-3xl bg-white/5 p-6 ring-1 ring-inset ring-white/10">
-      <h2 className="flex items-center gap-2.5 font-semibold">
-        <span className="text-xs font-medium text-mint/70">{props.step}</span>
-        {props.title}
-      </h2>
+      <h2 className="font-semibold">{props.title}</h2>
       {props.children}
     </section>
   );
@@ -72,7 +73,7 @@ function KeyCard() {
   };
 
   return (
-    <Card step="02" title={`${BAILIAN.label} API Key`}>
+    <Card title={`${BAILIAN.label} API Key`}>
       <p className="mt-1 text-sm text-white/60">
         试卷照片会发送给{BAILIAN.shortName}识别。拍照时请避开孩子的姓名和学校。
       </p>
@@ -153,7 +154,7 @@ function GradeCard() {
   };
 
   return (
-    <Card step="01" title="孩子的年级">
+    <Card title="孩子的年级">
       <p className="mt-1 text-sm text-white/60">
         错题库和智能练习只使用当前年级、当前学期的错题。
       </p>
@@ -243,7 +244,7 @@ function AboutCard() {
   };
 
   return (
-    <Card step="03" title="关于应用">
+    <Card title="关于应用">
       <p className="mt-2 text-white/75">当前版本 {version || '…'}</p>
       <div className="mt-4 flex flex-wrap items-center gap-4">
         <button
@@ -288,13 +289,37 @@ function AboutCard() {
 
 function ModelCard() {
   const [config, setConfig] = useState<AiConfig | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [saved, setSaved] = useState<Settings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg>(null);
 
   useEffect(() => {
     void window.api.getAiConfig().then(setConfig);
+    void window.api.getSettings().then((s) => {
+      setSettings(s);
+      setSaved(s);
+    });
   }, []);
 
+  const changed =
+    settings !== null &&
+    saved !== null &&
+    settings.practiceDifficulty !== saved.practiceDifficulty;
+
+  const saveDifficulty = async () => {
+    if (!settings) return;
+    setBusy(true);
+    const res = await window.api.saveSettings(settings);
+    setBusy(false);
+    if (!res.ok) return setMsg({ tone: 'error', text: res.error });
+    setSettings(res.value);
+    setSaved(res.value);
+    setMsg({ tone: 'ok', text: '已保存' });
+  };
+
   return (
-    <Card step="03" title="AI 模型">
+    <Card title="AI">
       <p className="mt-1 text-sm text-white/60">
         当前识别和练习使用的模型由应用配置统一管理。
       </p>
@@ -327,6 +352,53 @@ function ModelCard() {
           服务商：{config.provider} · {config.displayName}
         </p>
       )}
+      <div className="mt-6 border-t border-white/10 pt-5">
+        <label className="block max-w-md min-w-0">
+          <span className="mb-2 block text-sm text-white/75">出题难度</span>
+          <div className="relative">
+            <select
+              aria-label="出题难度"
+              value={settings?.practiceDifficulty ?? 'medium'}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (
+                  value !== 'easy' &&
+                  value !== 'medium' &&
+                  value !== 'hard'
+                )
+                  return;
+                if (settings) {
+                  setSettings({ ...settings, practiceDifficulty: value });
+                  setMsg(null);
+                }
+              }}
+              disabled={!settings || busy}
+              className={`${inputClass} appearance-none pr-11`}
+            >
+              {PRACTICE_DIFFICULTIES.map((item) => (
+                <option key={item.value} value={item.value} className="text-ink">
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/60" />
+          </div>
+          <span className="mt-2 block text-xs text-white/50">
+            用于下一次智能练习出题，默认建议使用“适中”。
+          </span>
+        </label>
+        <div className="mt-4 flex items-center gap-4">
+          <button
+            type="button"
+            className={btn.secondary}
+            onClick={() => void saveDifficulty()}
+            disabled={busy || !changed}
+          >
+            保存
+          </button>
+          {msg && <Note tone={msg.tone}>{msg.text}</Note>}
+        </div>
+      </div>
     </Card>
   );
 }

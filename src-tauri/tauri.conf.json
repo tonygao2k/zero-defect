@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "超级错题本",
+  "productName": "错了吗",
   "version": "1.0.0",
   "identifier": "com.zerodefect.app",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "超级错题本",
+        "title": "错了吗",
         "width": 1180,
         "height": 780,
         "minWidth": 960,

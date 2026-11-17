@@ -304,7 +304,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![backend])
         .build(tauri::generate_context!())
-        .expect("无法启动超级错题本")
+        .expect("无法启动错了吗")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
             match event {
