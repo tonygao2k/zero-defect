@@ -84,7 +84,7 @@ export function Page(props: {
   }, [props.title, props.scrollKey]);
 
   return (
-    <div className="flex h-full flex-col px-12 pb-8 pt-16">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden px-12 pb-8 pt-16">
       <header className="flex shrink-0 items-center justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-4xl font-semibold">{props.title}</h1>
@@ -99,14 +99,14 @@ export function Page(props: {
       {props.fixed ? (
         <div
           ref={contentRef}
-          className="mt-6 min-h-0 flex-1 flex-col overflow-hidden"
+          className="mt-6 flex min-h-0 flex-1 flex-col overflow-hidden"
         >
           {props.children}
         </div>
       ) : (
         <ScrollArea
           ref={contentRef}
-          className="mt-6 min-h-0 flex-1"
+          className="mt-6 flex min-h-0 flex-1 overflow-hidden"
           contentClassName="overflow-y-auto overscroll-contain p-1 pr-3"
         >
           {props.children}
@@ -218,10 +218,10 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
     };
 
     return (
-      <div {...props} className={`scroll-shell ${className}`}>
+      <div {...props} className={`scroll-shell flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${className}`}>
         <div
           ref={setContentRef}
-          className={`scroll-area-content ${contentClassName}`}
+          className={`scroll-area-content min-h-0 min-w-0 flex-1 ${contentClassName}`}
         >
           {children}
         </div>

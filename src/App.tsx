@@ -48,7 +48,7 @@ export function App() {
   const [page, setPage] = useState<PageId>('practice');
 
   return (
-    <div className="app-bg flex h-full text-white">
+    <div className="app-bg flex h-full min-h-0 overflow-hidden text-white">
       <aside
         data-tauri-drag-region="deep"
         aria-label="应用导航"
@@ -84,7 +84,7 @@ export function App() {
         </div>
       </aside>
 
-      <main className="relative min-w-0 flex-1">
+      <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <div data-tauri-drag-region className="absolute inset-x-0 top-0 h-10" />
         {page === 'practice' && <PracticePage />}
         {/* 上传页常驻挂载只做隐藏:切换页签时已添加的图片不会丢。 */}
