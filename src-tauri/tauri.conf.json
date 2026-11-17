@@ -43,6 +43,9 @@
       "minimumSystemVersion": "13.0"
     },
     "windows": {
+      "wix": {
+        "language": "zh-CN"
+      },
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
         "silent": true

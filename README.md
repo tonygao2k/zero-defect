@@ -41,7 +41,9 @@ git tag v1.0.1
 git push origin v1.0.1
 ```
 
-标签构建会先校验版本一致性，再构建 macOS 和 Windows 安装包，统一从 `release/` 收集 DMG、NSIS EXE 和 MSI。所有平台构建成功后，工作流会将安装包上传至对应 GitHub Release；普通分支和 PR 构建只保存 CI 附件，不发布更新。安装了旧版本的用户随后即可通过“检查更新”发现新版本。仅在本地构建不会向用户发布更新。
+标签构建会先校验版本一致性，再分别构建 macOS Intel、macOS Apple Silicon（ARM64）和 Windows 安装包，统一从 `release/` 收集 DMG、NSIS EXE 和 MSI。所有平台构建成功后，工作流会将安装包上传至同一个 GitHub Release；普通分支和 PR 构建只保存 CI 附件，不发布更新。安装了旧版本的用户随后即可通过“检查更新”发现新版本。仅在本地构建不会向用户发布更新。
+
+macOS 在各自架构的 GitHub runner 上原生构建：Intel 使用 `macos-15-intel`，Apple Silicon 使用 `macos-15`。发布页中，Intel Mac 选择文件名带 `_x64.dmg` 的安装包，M 系列芯片 Mac 选择带 `_aarch64.dmg` 的安装包；两者分开发布，不是 Universal 通用包。本机 `npm run build` 仍默认构建当前 Rust 工具链对应的架构。
 
 AI 服务和模型配置集中在 [`src-tauri/config/ai.json`](src-tauri/config/ai.json)。Rust 后端从这份配置读取接口地址和模型名称，设置页通过后端接口显示当前配置；修改后重新构建应用即可生效。模型名称不放在 `package.json`，因为 `package.json` 只负责 Node/Vite 的开发和构建元数据，安装后的桌面应用也不依赖 Node 运行时。
 
@@ -62,4 +64,4 @@ macOS 构建需要 Xcode Command Line Tools。Windows 构建需要 Rust 的 MSVC
 
 ## 验证范围
 
-本地验证包括前端测试、Rust 测试、Clippy、格式化检查、真实旧数据库读取、图片/PDF 选择器、HEIC 解码，以及 macOS `.app` 和 `.dmg` 构建。AI 集成测试使用本地 HTTP mock，不会产生线上模型费用；Windows 构建由 CI 工作流配置，当前开发机未执行 Windows 编译。
+本地验证包括前端测试、Rust 测试、Clippy、格式化检查、真实旧数据库读取、图片/PDF 选择器、HEIC 解码，以及 macOS `.app` 和 `.dmg` 构建。AI 集成测试使用本地 HTTP mock，不会产生线上模型费用；Windows 和 macOS ARM64 构建由 CI 工作流配置，当前 Intel 开发机未执行这两种架构的原生编译。
