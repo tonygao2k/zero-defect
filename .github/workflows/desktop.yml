@@ -29,6 +29,10 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: node scripts/check-release-version.mjs "$GITHUB_REF_NAME"
       - run: npm run typecheck
       - run: npm test
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
@@ -36,5 +40,32 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: zero-defect-${{ matrix.os }}
-          path: src-tauri/target/release/bundle/
+          path: |
+            release/*.dmg
+            release/*.exe
+            release/*.msi
           if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: zero-defect-*
+          path: release
+          merge-multiple: true
+      - name: Publish installers to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release/* --verify-tag --generate-notes
+          fi
