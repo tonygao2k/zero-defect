@@ -69,7 +69,7 @@ git diff --check
 git diff
 ```
 
-版本检查脚本校验标签与 3 个配置文件是否一致；两个 lock 文件也需要按上表核对。Rust 测试使用 `--locked`，若提示需要更新 lock 文件，先解决版本同步问题再继续。所有检查通过后，确认本次功能或修复已提交，或已一并加入暂存区，再提交版本文件并推送：
+版本检查脚本会同时校验标签、3 个配置文件、`package-lock.json` 的两处项目版本，以及 `Cargo.lock` 中项目自身的版本；版本不一致、缺失或 `Cargo.lock` 中的项目条目不唯一时会报错，并列出各处版本。脚本只检查，不会自动修改文件；CI 标签发布时也会执行同样的校验。Rust 测试使用 `--locked`，若提示需要更新 lock 文件，先解决版本同步问题再继续。所有检查通过后，确认本次功能或修复已提交，或已一并加入暂存区，再提交版本文件并推送：
 
 ```bash
 git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
