@@ -27,10 +27,7 @@ function updateText(result: UpdateCheckResult): string {
   }
 }
 
-function Card(props: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function Card(props: { title: string; children: React.ReactNode }) {
   return (
     <section className="@container min-w-0 rounded-3xl bg-white/5 p-6 ring-1 ring-inset ring-white/10">
       <h2 className="font-semibold">{props.title}</h2>
@@ -281,7 +278,8 @@ function AboutCard() {
         )}
       </div>
       <p className="mt-3 text-xs text-white/50">
-        只在点击时联网查询 GitHub,不会自动检查,也不会上传任何学习数据。
+        启动后会在后台检查更新,运行期间每 6 小时再检查,也可手动检查。
+        检查会联网查询 GitHub,不会上传任何学习数据。
       </p>
     </Card>
   );
@@ -361,11 +359,7 @@ function ModelCard() {
               value={settings?.practiceDifficulty ?? 'medium'}
               onChange={(e) => {
                 const value = e.target.value;
-                if (
-                  value !== 'easy' &&
-                  value !== 'medium' &&
-                  value !== 'hard'
-                )
+                if (value !== 'easy' && value !== 'medium' && value !== 'hard')
                   return;
                 if (settings) {
                   setSettings({ ...settings, practiceDifficulty: value });
@@ -376,7 +370,11 @@ function ModelCard() {
               className={`${inputClass} appearance-none pr-11`}
             >
               {PRACTICE_DIFFICULTIES.map((item) => (
-                <option key={item.value} value={item.value} className="text-ink">
+                <option
+                  key={item.value}
+                  value={item.value}
+                  className="text-ink"
+                >
                   {item.label}
                 </option>
               ))}

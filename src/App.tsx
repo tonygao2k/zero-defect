@@ -13,6 +13,7 @@ import { LibraryPage } from './pages/LibraryPage';
 import { PracticePage } from './pages/PracticePage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UploadPage } from './pages/UploadPage';
+import { UpdateNotice } from './components/UpdateNotice';
 
 type PageId = 'practice' | 'upload' | 'library' | 'settings';
 
@@ -118,6 +119,7 @@ export function App() {
         {page === 'library' && <LibraryPage />}
         {page === 'settings' && <SettingsPage />}
       </main>
+      <UpdateNotice />
     </div>
   );
 }
