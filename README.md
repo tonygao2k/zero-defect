@@ -34,12 +34,74 @@ macOS 制作 DMG 时如果遇到 Finder AppleEvent 超时，可用 `CI=true npm 
 
 设置页的“检查更新”查询 `tonygao2k/zero-defect` 的最新正式 GitHub Release，比较版本号后，“前往下载”打开该发布页，供用户下载安装包更新。它不会读取开发者电脑上的 `release/`，也不会自动下载或安装。
 
-发布新版本时，先同步修改 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 中的版本号，并更新、提交相应 lock 文件，再推送对应的 `v版本号` Git 标签。例如版本为 `1.0.1` 时：
+#### 1. 同步版本号（3 个配置文件 + 2 个 lock 文件）
+
+以下以从 `1.0.1` 发布到 `1.0.2` 为例。先完成本次要发布的功能或修复，再把以下位置的项目版本号统一改为 `1.0.2`：
+
+| 文件                        | 需要同步的位置                                               |
+| --------------------------- | ------------------------------------------------------------ |
+| `package.json`              | 顶层 `version`                                               |
+| `src-tauri/tauri.conf.json` | 顶层 `version`                                               |
+| `src-tauri/Cargo.toml`      | `[package]` 中的 `version`                                   |
+| `package-lock.json`         | 顶层 `version` 和 `packages[""].version`，共两处             |
+| `src-tauri/Cargo.lock`      | `name = "zero-defect"` 所属 `[[package]]` 条目中的 `version` |
+
+`Cargo.lock` 不只记录第三方依赖，也记录项目自身的版本。该条目通常在文件后部，搜索 `name = "zero-defect"` 即可找到：
+
+```toml
+[[package]]
+name = "zero-defect"
+version = "1.0.2"
+```
+
+只修改项目自身的版本，不要全局替换 lock 文件中的所有 `1.0.1`，也不要修改其他依赖的版本或 checksum。配置文件和 lock 文件使用 `1.0.2`，Git 标签使用带 `v` 前缀的 `v1.0.2`。
+
+#### 2. 本地检查并提交代码
+
+在项目根目录运行：
 
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+node scripts/check-release-version.mjs v1.0.2
+npm run typecheck
+npm test
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+git diff --check
+git diff
 ```
+
+版本检查脚本校验标签与 3 个配置文件是否一致；两个 lock 文件也需要按上表核对。Rust 测试使用 `--locked`，若提示需要更新 lock 文件，先解决版本同步问题再继续。所有检查通过后，确认本次功能或修复已提交，或已一并加入暂存区，再提交版本文件并推送：
+
+```bash
+git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+git commit -m "发布 1.0.2"
+git push origin main
+```
+
+如果实际发布分支是 `master`，将上述 `main` 换成 `master`。仅推送分支会运行检查和测试，不会生成安装包或发布 Release。
+
+#### 3. 创建并推送版本标签
+
+确认当前提交就是要发布的版本，且分支检查通过后，再执行：
+
+```bash
+git tag v1.0.2
+git push origin v1.0.2
+```
+
+两条命令分行执行，第一行末尾不要加 `\`。标签指向执行 `git tag` 时的当前提交，未提交的修改不会进入发布。仅在本地创建标签不会触发 GitHub Actions，推送标签后才开始打包发布。下次发布时，将本节中的 `1.0.2` 和 `v1.0.2` 换成新的版本号；不要重复使用或移动已经发布的版本标签。
+
+#### 4. 确认发布结果
+
+在 GitHub 的 **Actions → Desktop builds** 中查看该标签对应的运行，等待检查、三个平台的构建和 `release` 作业全部成功，再到 **Releases** 确认对应版本包含以下安装包：
+
+- `zero-defect_1.0.2_aarch64.dmg`：Apple Silicon Mac。
+- `zero-defect_1.0.2_x64.dmg`：Intel Mac。
+- `zero-defect_1.0.2_x64-setup.exe`：Windows NSIS 安装包。
+- `zero-defect_1.0.2_x64_zh-CN.msi`：Windows MSI 安装包。
+
+若检查或构建失败，先查看失败步骤的日志；所有平台构建成功前不会执行发布作业。已安装旧版本的用户需要在 App 的设置页点击“检查更新”，当前没有自动提醒。只有正式发布的版本号高于用户本机版本时才会提示更新；重新上传同版本安装包不会提示更新。
+
+#### 工作流触发与附件保留
 
 推送到 `main` / `master`、创建或更新 PR，以及手动运行工作流时，只在单个 macOS Intel runner 上执行类型检查、前端测试和 Rust 测试，不生成安装包或上传构建附件。
 
