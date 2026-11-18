@@ -41,7 +41,9 @@ git tag v1.0.1
 git push origin v1.0.1
 ```
 
-标签构建会先校验版本一致性，再分别构建 macOS Intel、macOS Apple Silicon（ARM64）和 Windows 安装包，统一从 `release/` 收集 DMG、NSIS EXE 和 MSI。所有平台构建成功后，工作流会将安装包上传至同一个 GitHub Release；普通分支和 PR 构建只保存 CI 附件，不发布更新。安装了旧版本的用户随后即可通过“检查更新”发现新版本。仅在本地构建不会向用户发布更新。
+推送到 `main` / `master`、创建或更新 PR，以及手动运行工作流时，只在单个 macOS Intel runner 上执行类型检查、前端测试和 Rust 测试，不生成安装包或上传构建附件。
+
+只有推送 `v*` 版本标签才会打包发布：先校验版本一致性并通过检查和测试，再分别构建 macOS Intel、macOS Apple Silicon（ARM64）和 Windows 安装包，统一从 `release/` 收集 DMG、NSIS EXE 和 MSI。所有平台构建成功后，工作流会将安装包上传至同一个 GitHub Release。用于发布中转的 Actions 安装包附件只保留 3 天，GitHub Release 中的安装包不受该保留期限影响。安装了旧版本的用户随后即可通过“检查更新”发现新版本。仅在本地构建不会向用户发布更新。
 
 macOS 在各自架构的 GitHub runner 上原生构建：Intel 使用 `macos-15-intel`，Apple Silicon 使用 `macos-15`。发布页中，Intel Mac 选择文件名带 `_x64.dmg` 的安装包，M 系列芯片 Mac 选择带 `_aarch64.dmg` 的安装包；两者分开发布，不是 Universal 通用包。本机 `npm run build` 仍默认构建当前 Rust 工具链对应的架构。
 

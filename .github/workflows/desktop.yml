@@ -8,7 +8,30 @@ on:
 permissions:
   contents: read
 jobs:
+  checks:
+    name: Checks and tests
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: node scripts/check-release-version.mjs "$GITHUB_REF_NAME"
+      - run: npm run typecheck
+      - run: npm test
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
   desktop:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: checks
     strategy:
       fail-fast: false
       matrix:
@@ -31,13 +54,6 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
-      - name: Validate release version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: node scripts/check-release-version.mjs "$GITHUB_REF_NAME"
-      - run: npm run typecheck
-      - run: npm test
-      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - run: npm run build -- ${{ matrix.args }}
       - uses: actions/upload-artifact@v4
         with:
@@ -47,8 +63,9 @@ jobs:
             release/*.exe
             release/*.msi
           if-no-files-found: error
+          retention-days: 3
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: desktop
     runs-on: ubuntu-latest
     permissions:
