@@ -59,6 +59,7 @@ export const IPC = {
   listPracticeReviews: 'practice:listReviews',
   resolvePracticeReview: 'practice:resolveReview',
   finishPractice: 'practice:finish',
+  abandonPractice: 'practice:abandon',
 } as const;
 
 export type UpdateCheckResult =
@@ -195,4 +196,5 @@ export type Api = {
     note: string;
   }): Promise<Result<void>>;
   finishPractice(input: { sessionId: string }): Promise<Result<void>>;
+  abandonPractice(input: { sessionId: string }): Promise<Result<void>>;
 };

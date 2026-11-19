@@ -8,6 +8,7 @@ mod practice;
 mod question_review;
 mod repo;
 mod revision;
+mod schedule;
 mod state;
 
 use db::{exec, one, text, transaction, AppResult};
@@ -42,6 +43,7 @@ const WRAPPED: &[&str] = &[
     "listPracticeReviews",
     "resolvePracticeReview",
     "finishPractice",
+    "abandonPractice",
 ];
 
 #[tauri::command]
@@ -158,6 +160,7 @@ fn dispatch(state: &AppState, method: &str, input: &Value) -> AppResult<Value> {
         "listPracticeReviews" => question_review::list(&i),
         "resolvePracticeReview" => question_review::resolve(&i, input),
         "finishPractice" => practice::finish(&i, input),
+        "abandonPractice" => practice::abandon(&i, input),
         _ => Err("不支持的后台操作".into()),
     }
 }

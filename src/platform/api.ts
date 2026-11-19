@@ -77,4 +77,5 @@ export const api: Api = {
   resolvePracticeReview: (input) => call('resolvePracticeReview', input),
   finishPractice: (...args: Parameters<Api['finishPractice']>) =>
     call('finishPractice', (args as unknown[])[0]),
+  abandonPractice: (input) => call('abandonPractice', input),
 };

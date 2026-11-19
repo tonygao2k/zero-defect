@@ -1,5 +1,5 @@
 use crate::answers;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use rusqlite::{params, types::ValueRef, Connection, ToSql};
 use serde_json::{json, Map, Value};
 use std::{
@@ -9,10 +9,18 @@ use std::{
 };
 
 pub type AppResult<T> = Result<T, String>;
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 pub fn now() -> String {
-    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    stamp(Utc::now())
+}
+pub fn stamp(time: DateTime<Utc>) -> String {
+    time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+pub fn local_date(at: &str) -> Option<NaiveDate> {
+    DateTime::parse_from_rfc3339(at)
+        .ok()
+        .map(|time| time.with_timezone(&Local).date_naive())
 }
 pub fn id() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -160,6 +168,30 @@ pub fn migrate(db: &Connection, file: Option<&Path>, target: i64) -> AppResult<(
                     db.execute_batch(include_str!("../assets/v7.sql"))
                         .map_err(err)?;
                     backfill_mistake_evidence(db)?;
+                }
+                8 => {
+                    db.execute_batch(include_str!("../assets/v8.sql"))
+                        .map_err(err)?;
+                    exec(
+                        db,
+                        "INSERT INTO practice_schedule_origin VALUES (?1)",
+                        &[&Local::now().date_naive().to_string()],
+                    )?;
+                    for (table, column, day) in [
+                        ("answer_attempts", "created_at", "local_date"),
+                        (
+                            "practice_questions",
+                            "revision_hint_at",
+                            "revision_hint_local_date",
+                        ),
+                        (
+                            "mistakes",
+                            "confirmed_evidence_at",
+                            "confirmed_evidence_local_date",
+                        ),
+                    ] {
+                        exec(db, &format!("UPDATE {table} SET {day}=date({column},'localtime') WHERE {column} IS NOT NULL"), &[])?;
+                    }
                 }
                 _ => return Err("不支持的数据库版本".into()),
             }

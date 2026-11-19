@@ -89,10 +89,12 @@ pub fn request_hint(i: &Inner, input: &Value) -> AppResult<Value> {
         text(&question, "knowledge_point_id"),
         text(&parsed(&question, "figure_json"), "type"),
     );
+    let now = db::now();
+    let day = db::local_date(&now).map(|day| day.to_string());
     exec(
         &i.db,
-        "UPDATE practice_questions SET revision_hint_at=?1 WHERE id=?2 AND revision_hint_at IS NULL",
-        &[&db::now(), &id],
+        "UPDATE practice_questions SET revision_hint_at=?1,revision_hint_local_date=?2 WHERE id=?3 AND revision_hint_at IS NULL",
+        &[&now, &day, &id],
     )?;
     Ok(json!({"step":step,"prompt":hints[(step - 1) as usize]}))
 }

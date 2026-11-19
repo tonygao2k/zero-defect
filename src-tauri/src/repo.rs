@@ -163,7 +163,7 @@ pub fn confirm(i: &Inner, input: &Value) -> AppResult<Value> {
     let work = text(input, "studentWorkMarkdown").trim();
     let row = one(
         &i.db,
-        "SELECT incomplete,confirmed_evidence_at FROM mistakes WHERE id=?1",
+        "SELECT incomplete,confirmed_evidence_at,confirmed_evidence_local_date FROM mistakes WHERE id=?1",
         &[&id],
     )?
     .ok_or("找不到这道错题")?;
@@ -179,6 +179,12 @@ pub fn confirm(i: &Inner, input: &Value) -> AppResult<Value> {
     let now = db::now();
     let evidence_at = answers::is_mistake_evidence(student, work, correct)
         .then(|| row["confirmed_evidence_at"].as_str().unwrap_or(&now));
+    let evidence_day = evidence_at.and_then(|at| {
+        row["confirmed_evidence_local_date"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| db::local_date(at).map(|day| day.to_string()))
+    });
     let cause = one(
         &i.db,
         "SELECT id FROM root_causes WHERE code=?1 AND active=1",
@@ -192,7 +198,7 @@ pub fn confirm(i: &Inner, input: &Value) -> AppResult<Value> {
     )?
     .ok_or("知识点不存在,请重新选择")?;
     transaction(&i.db, || {
-        exec(&i.db,"UPDATE mistakes SET question_markdown=?1,student_answer=?2,student_work_markdown=?3,correct_answer=?4,knowledge_point_id=?5,status='active',updated_at=?6,confirmed_evidence_at=?7,incomplete=0 WHERE id=?8",&[&q,&student,&work,&correct,&text(&kp,"id"),&now,&evidence_at,&id])?;
+        exec(&i.db,"UPDATE mistakes SET question_markdown=?1,student_answer=?2,student_work_markdown=?3,correct_answer=?4,knowledge_point_id=?5,status='active',updated_at=?6,confirmed_evidence_at=?7,confirmed_evidence_local_date=?8,incomplete=0 WHERE id=?9",&[&q,&student,&work,&correct,&text(&kp,"id"),&now,&evidence_at,&evidence_day,&id])?;
         exec(
             &i.db,
             "UPDATE mistake_root_causes SET is_primary=0 WHERE mistake_id=?1",

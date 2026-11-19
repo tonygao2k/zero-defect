@@ -6,11 +6,28 @@ export type HomeStats = {
   answeredCount: number;
   masteredKnowledgePoints: number;
   remainingKnowledgePoints: number;
-  /** 现在能练习的“知识点 + 根因”数(未掌握的,或已掌握且该复习的)。为 0 时“开始练习”置灰。 */
   practiceablePairs: number;
+  dailyPractice: {
+    date: string;
+    canResume: boolean;
+    submitted: boolean;
+    dueReviews: number;
+    overdueReviews: number;
+    plan: {
+      review: number;
+      recheck: number;
+      reinforcement: number;
+    };
+  };
   unsureRecheckPending: number;
   guidedRecheck: {
     pending: number;
+    completed: number;
+    correct: number;
+  };
+  crossDayRecheck: {
+    waiting: number;
+    due: number;
     completed: number;
     correct: number;
   };

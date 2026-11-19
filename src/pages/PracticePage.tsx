@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { FigureView } from '../components/FigureView';
 import { Hero } from '../components/Hero';
 import { MarkdownView } from '../components/MarkdownView';
@@ -97,15 +104,46 @@ export function PracticePage({ active }: { active: boolean }) {
   const [stage, setStage] = useState<Stage>({ name: 'home' });
   const [stats, setStats] = useState<HomeStats | null>(null);
   const [error, setError] = useState('');
-  const startedAt = useRef(0);
+  const statsDate = useRef('');
   const resultSessionId =
     stage.name === 'result' || stage.name === 'revising'
       ? stage.session.sessionId
       : null;
 
   useEffect(() => {
-    if (active && stage.name === 'home')
-      void window.api.getHomeStats().then(setStats);
+    if (!active || stage.name !== 'home') return;
+    let current = true;
+    let request = 0;
+    const refresh = () => {
+      const version = ++request;
+      void window.api
+        .getHomeStats()
+        .then((value) => {
+          if (current && version === request) {
+            statsDate.current = value.dailyPractice.date;
+            setStats(value);
+            setError((previous) =>
+              previous === '暂时无法读取练习信息。' ? '' : previous,
+            );
+          }
+        })
+        .catch(() => {
+          if (current && version === request)
+            setError('暂时无法读取练习信息。');
+        });
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    const timer = window.setInterval(() => {
+      const now = new Date();
+      const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      if (statsDate.current !== date) refresh();
+    }, 15_000);
+    return () => {
+      current = false;
+      window.removeEventListener('focus', refresh);
+      window.clearInterval(timer);
+    };
   }, [active, stage.name]);
 
   useEffect(() => {
@@ -135,13 +173,23 @@ export function PracticePage({ active }: { active: boolean }) {
   const start = async () => {
     setError('');
     setStage({ name: 'generating' });
-    const res = await window.api.startPractice();
-    if (!res.ok) {
-      setError(res.error);
-      return setStage({ name: 'home' });
+    try {
+      const res = await window.api.startPractice();
+      if (!res.ok) {
+        setError(res.error);
+        return setStage({ name: 'home' });
+      }
+      setStage({ name: 'answering', session: res.value });
+    } catch {
+      setError('暂时无法开始练习，请重试。');
+      setStage({ name: 'home' });
     }
-    startedAt.current = Date.now();
-    setStage({ name: 'answering', session: res.value });
+  };
+
+  const returnHome = () => {
+    setStats(null);
+    setError('');
+    setStage({ name: 'home' });
   };
 
   if (stage.name === 'generating')
@@ -155,16 +203,33 @@ export function PracticePage({ active }: { active: boolean }) {
   if (stage.name === 'answering')
     return (
       <Answering
+        key={stage.session.sessionId}
+        active={active}
         session={stage.session}
-        onSubmit={async (answers) => {
+        onPause={returnHome}
+        onAbandon={async () => {
+          setError('');
+          try {
+            const res = await window.api.abandonPractice({
+              sessionId: stage.session.sessionId,
+            });
+            if (!res.ok) return setError(res.error);
+            clearPracticeDraft();
+            returnHome();
+          } catch {
+            setError('暂时无法放弃练习，请重试。');
+          }
+        }}
+        onSubmit={async (answers, elapsedMs) => {
           setError('');
           try {
             const res = await window.api.submitPractice({
               sessionId: stage.session.sessionId,
               answers,
-              elapsedMs: Date.now() - startedAt.current,
+              elapsedMs,
             });
             if (!res.ok) return setError(res.error);
+            clearPracticeDraft();
             setStage({
               name: 'result',
               session: stage.session,
@@ -216,10 +281,15 @@ export function PracticePage({ active }: { active: boolean }) {
               type="button"
               className={btn.secondary}
               onClick={async () => {
-                await window.api.finishPractice({
-                  sessionId: stage.session.sessionId,
-                });
-                setStage({ name: 'home' });
+                try {
+                  const res = await window.api.finishPractice({
+                    sessionId: stage.session.sessionId,
+                  });
+                  if (!res.ok) return setError(res.error);
+                  returnHome();
+                } catch {
+                  setError('暂时无法结束练习，请重试。');
+                }
               }}
             >
               结束练习
@@ -320,11 +390,11 @@ export function PracticePage({ active }: { active: boolean }) {
     );
   }
 
-  const canStart = (stats?.practiceablePairs ?? 0) > 0;
-  const recheck = stats?.guidedRecheck;
-  const showGuidedRecheck =
-    recheck && (recheck.pending > 0 || recheck.completed > 0);
-  const unsureRecheckPending = stats?.unsureRecheckPending ?? 0;
+  const plan = stats?.dailyPractice.plan;
+  const canResume = stats?.dailyPractice.canResume ?? false;
+  const canStart =
+    canResume ||
+    !!(plan && plan.review + plan.recheck + plan.reinforcement > 0);
   return (
     <Page
       title="智能练习"
@@ -334,12 +404,16 @@ export function PracticePage({ active }: { active: boolean }) {
           <div className="min-w-0 text-sm text-white/60">
             {error ? (
               <Note tone="error">{error}</Note>
-            ) : stats && !canStart ? (
+            ) : !stats ? (
+              <p>正在读取练习信息…</p>
+            ) : !canStart ? (
               <p>
                 {stats.mistakeCount === 0
                   ? '先上传并确认错题，就可以开始练习。'
-                  : '当前练习已完成，到了复习时间再来。'}
+                  : '暂时没有需要练习的内容。'}
               </p>
+            ) : canResume ? (
+              <p>有一组练习还没结束，可以接着做。</p>
             ) : (
               <p>根据已确认的错题，练习需要巩固的知识点。</p>
             )}
@@ -350,7 +424,7 @@ export function PracticePage({ active }: { active: boolean }) {
             disabled={!canStart}
             className={btn.primary}
           >
-            开始练习
+            {canResume ? '继续练习' : '开始练习'}
           </button>
         </div>
       }
@@ -386,7 +460,7 @@ export function PracticePage({ active }: { active: boolean }) {
                 label: '累计练习',
                 value: stats.answeredCount,
                 unit: '道',
-                hint: '有效的独立作答',
+                hint: '自己完成的练习',
               },
               {
                 label: '已经掌握',
@@ -415,33 +489,6 @@ export function PracticePage({ active }: { active: boolean }) {
                 <p className="mt-1 text-xs text-white/45">{item.hint}</p>
               </div>
             ))}
-            {(showGuidedRecheck || unsureRecheckPending > 0) && (
-              <section
-                aria-label="练习复测"
-                className="col-span-full flex flex-col justify-center gap-1 rounded-3xl bg-white/5 px-4 py-3 ring-1 ring-inset ring-white/10"
-              >
-                {showGuidedRecheck && (
-                  <>
-                    <div className="@min-[640px]:flex @min-[640px]:flex-wrap @min-[640px]:items-baseline @min-[640px]:gap-x-4">
-                      <h2 className="font-semibold">订正后的独立复测</h2>
-                      <p className="text-sm leading-relaxed text-white/70">
-                        {recheck.pending} 项待复测；已复测 {recheck.completed}{' '}
-                        项，其中 {recheck.correct} 项首次独立答对。
-                      </p>
-                    </div>
-                    <p className="text-sm text-white/60">
-                      后续练习会优先安排一项待复测内容，用新题检验是否能自己做出来。
-                    </p>
-                  </>
-                )}
-                {unsureRecheckPending > 0 && (
-                  <Note tone="info">
-                    有 {unsureRecheckPending}{' '}
-                    项标记过「不会」，后续会优先安排同类新题。
-                  </Note>
-                )}
-              </section>
-            )}
           </section>
         )}
       </div>
@@ -449,20 +496,188 @@ export function PracticePage({ active }: { active: boolean }) {
   );
 }
 
+const PRACTICE_DRAFT_KEY = 'zero-defect.practice-draft';
+const MAX_PRACTICE_ELAPSED_MS = 86_400_000;
+type DraftAnswers = Record<string, Omit<PracticeAnswerInput, 'questionId'>>;
+type PracticeDraft = {
+  questionId?: string;
+  answers: DraftAnswers;
+  elapsedMs: number;
+};
+
+function readPracticeDraft(sessionId: string): PracticeDraft {
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(PRACTICE_DRAFT_KEY) ?? 'null',
+    ) as (Partial<PracticeDraft> & { sessionId: string }) | null;
+    if (stored?.sessionId === sessionId) {
+      const elapsedMs = stored.elapsedMs ?? 0;
+      return {
+        questionId: stored.questionId,
+        answers: stored.answers ?? {},
+        elapsedMs: Number.isFinite(elapsedMs)
+          ? Math.min(MAX_PRACTICE_ELAPSED_MS, Math.max(0, elapsedMs))
+          : 0,
+      };
+    }
+  } catch {
+    return { answers: {}, elapsedMs: 0 };
+  }
+  return { answers: {}, elapsedMs: 0 };
+}
+
+function writePracticeDraft(sessionId: string, draft: PracticeDraft) {
+  try {
+    window.localStorage.setItem(
+      PRACTICE_DRAFT_KEY,
+      JSON.stringify({ sessionId, ...draft }),
+    );
+  } catch {
+    return;
+  }
+}
+
+function clearPracticeDraft() {
+  try {
+    window.localStorage.removeItem(PRACTICE_DRAFT_KEY);
+  } catch {
+    return;
+  }
+}
+
+type PracticeConfirmation =
+  | { action: 'abandon' }
+  | { action: 'submit'; blank: number };
+
+function PracticeConfirmDialog({
+  confirmation,
+  onCancel,
+  onConfirm,
+}: {
+  confirmation: PracticeConfirmation;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  const abandoning = confirmation.action === 'abandon';
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current!;
+    dialog.showModal();
+    cancelRef.current?.focus();
+    return () => dialog.close();
+  }, []);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      className="m-auto w-md max-w-[calc(100%-2rem)] rounded-3xl bg-[#164d3b] p-6 text-white shadow-xl backdrop:bg-black/55"
+      onCancel={(event) => {
+        event.preventDefault();
+        onCancel();
+      }}
+    >
+      <h2 id={titleId} className="text-xl font-semibold">
+        {abandoning ? '放弃这组练习？' : '还有题目未作答'}
+      </h2>
+      <p
+        id={descriptionId}
+        className="mt-2 text-sm leading-relaxed text-white/80"
+      >
+        {confirmation.action === 'abandon'
+          ? '本轮未提交的作答不会计分，到期项目仍会保留。'
+          : `还有 ${confirmation.blank} 道题留空，提交后记为未作答，不算错。`}
+      </p>
+      <div className="mt-6 flex flex-wrap justify-end gap-3">
+        <button
+          ref={cancelRef}
+          type="button"
+          className={btn.secondary}
+          onClick={onCancel}
+        >
+          继续作答
+        </button>
+        <button
+          type="button"
+          className={abandoning ? btn.danger : btn.primary}
+          onClick={onConfirm}
+        >
+          {abandoning ? '确认放弃' : '确认提交'}
+        </button>
+      </div>
+    </dialog>
+  );
+}
+
 function Answering(props: {
+  active: boolean;
   session: PracticeSession;
   error: string;
-  onSubmit: (answers: PracticeAnswerInput[]) => Promise<void>;
+  onSubmit: (
+    answers: PracticeAnswerInput[],
+    elapsedMs: number,
+  ) => Promise<void>;
+  onAbandon: () => Promise<void>;
+  onPause: () => void;
 }) {
-  const { questions } = props.session;
-  const [index, setIndex] = useState(0);
-  const [answers, setAnswers] = useState<
-    Record<string, Omit<PracticeAnswerInput, 'questionId'>>
-  >({});
-  const [busy, setBusy] = useState(false);
+  const { questions, sessionId } = props.session;
+  const [draft] = useState(() => readPracticeDraft(sessionId));
+  const clock = useRef({
+    elapsedMs: draft.elapsedMs,
+    startedAt: null as number | null,
+  });
+  const [index, setIndex] = useState(() =>
+    Math.max(
+      0,
+      questions.findIndex((question) => question.id === draft.questionId),
+    ),
+  );
+  const [answers, setAnswers] = useState(draft.answers);
+  const [confirmation, setConfirmation] = useState<PracticeConfirmation | null>(
+    null,
+  );
+  const [pending, setPending] = useState<PracticeConfirmation['action'] | null>(
+    null,
+  );
+  const busy = pending !== null;
   const q = questions[index];
   const last = index === questions.length - 1;
   const current = answers[q.id];
+  const saveDraft = useCallback(
+    (stopClock = false) => {
+      const { startedAt, elapsedMs: previous } = clock.current;
+      const elapsedMs = Math.min(
+        MAX_PRACTICE_ELAPSED_MS,
+        previous + (startedAt === null ? 0 : performance.now() - startedAt),
+      );
+      if (stopClock) clock.current = { elapsedMs, startedAt: null };
+      writePracticeDraft(sessionId, { questionId: q.id, answers, elapsedMs });
+      return elapsedMs;
+    },
+    [sessionId, q.id, answers],
+  );
+  useLayoutEffect(() => {
+    const syncClock = () => {
+      const running = props.active && !busy && !document.hidden;
+      if (running) clock.current.startedAt ??= performance.now();
+      saveDraft(!running);
+    };
+    const onPageHide = () => saveDraft(true);
+    syncClock();
+    document.addEventListener('visibilitychange', syncClock);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', syncClock);
+    return () => {
+      document.removeEventListener('visibilitychange', syncClock);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', syncClock);
+    };
+  }, [props.active, busy, saveDraft]);
   const mark = (disposition: PracticeDisposition) =>
     setAnswers((previous) => ({
       ...previous,
@@ -473,28 +688,33 @@ function Answering(props: {
       },
     }));
 
-  const submit = async () => {
+  const run = async (action: PracticeConfirmation['action']) => {
+    if (busy) return;
+    setConfirmation(null);
+    setPending(action);
+    try {
+      if (action === 'abandon') {
+        await props.onAbandon();
+      } else {
+        await props.onSubmit(
+          questions.map(({ id }) => ({
+            questionId: id,
+            ...(answers[id] ?? { answer: '' }),
+          })),
+          Math.round(saveDraft()),
+        );
+      }
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const submit = () => {
     const blank = questions.filter(
       ({ id }) => !answers[id]?.disposition && !answers[id]?.answer.trim(),
     ).length;
-    if (
-      blank > 0 &&
-      !window.confirm(
-        `还有 ${blank} 道题留空，提交后记为未作答，不算错。确定提交吗？`,
-      )
-    )
-      return;
-    setBusy(true);
-    try {
-      await props.onSubmit(
-        questions.map(({ id }) => ({
-          questionId: id,
-          ...(answers[id] ?? { answer: '' }),
-        })),
-      );
-    } finally {
-      setBusy(false);
-    }
+    if (blank > 0) setConfirmation({ action: 'submit', blank });
+    else void run('submit');
   };
 
   return (
@@ -509,6 +729,32 @@ function Answering(props: {
       }
       footer={
         <div className="flex flex-wrap justify-end gap-3">
+          {props.error && (
+            <div className="w-full">
+              <Note tone="error">{props.error}</Note>
+            </div>
+          )}
+          <div className="mr-auto flex flex-wrap gap-3">
+            <button
+              type="button"
+              className={btn.secondary}
+              disabled={busy}
+              onClick={() => {
+                saveDraft(true);
+                props.onPause();
+              }}
+            >
+              稍后继续
+            </button>
+            <button
+              type="button"
+              className={btn.danger}
+              disabled={busy}
+              onClick={() => setConfirmation({ action: 'abandon' })}
+            >
+              {pending === 'abandon' ? '放弃中…' : '放弃练习'}
+            </button>
+          </div>
           <button
             type="button"
             className={btn.secondary}
@@ -522,9 +768,9 @@ function Answering(props: {
               type="button"
               className={btn.primary}
               disabled={busy}
-              onClick={() => void submit()}
+              onClick={submit}
             >
-              {busy ? '提交中…' : '提交'}
+              {pending === 'submit' ? '提交中…' : '提交'}
             </button>
           ) : (
             <button
@@ -581,12 +827,14 @@ function Answering(props: {
           </Note>
         )}
         <PracticeQuestionReport questionId={q.id} />
-        {props.error && (
-          <div className="mt-3">
-            <Note tone="error">{props.error}</Note>
-          </div>
-        )}
       </div>
+      {confirmation && (
+        <PracticeConfirmDialog
+          confirmation={confirmation}
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => void run(confirmation.action)}
+        />
+      )}
     </Page>
   );
 }

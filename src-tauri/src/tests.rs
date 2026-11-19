@@ -5,12 +5,394 @@ use crate::{
     practice::Question,
     state::{AppState, Settings},
 };
-use chrono::{DateTime, Utc};
-use std::fs;
+use chrono::{DateTime, Days, FixedOffset, Local, NaiveDate, TimeZone, Utc};
+use std::{fs, sync::Barrier, thread};
 fn setup() -> (tempfile::TempDir, AppState) {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new(dir.path().to_owned(), vec![]).unwrap();
     (dir, state)
+}
+fn practice_day(day: u32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(2026, 3, day).unwrap()
+}
+fn practice_time(day: NaiveDate, hour: u32, minute: u32) -> DateTime<Utc> {
+    Local
+        .from_local_datetime(&day.and_hms_opt(hour, minute, 0).unwrap())
+        .single()
+        .unwrap()
+        .with_timezone(&Utc)
+}
+
+fn scheduled_question(i: &state::Inner, label: &str) -> Question {
+    Question {
+        markdown: label.into(),
+        kind: "number".into(),
+        options: vec![],
+        correct: "15".into(),
+        unit: String::new(),
+        solution: "15".into(),
+        figure: Value::Null,
+        solver: "15".into(),
+        pair: mastery::pairs(i).unwrap().remove(0),
+        level: None,
+    }
+}
+
+fn submit_on(i: &state::Inner, session: &Value, answer: &str, now: DateTime<Utc>) -> Value {
+    practice::submit_at(
+        i,
+        &json!({"sessionId":session["sessionId"],"answers":
+        [{"questionId":session["questions"][0]["id"],"answer":answer}]}),
+        now.with_timezone(&Local),
+    )
+    .unwrap()
+}
+
+fn record_variant(i: &state::Inner, label: &str, answer: &str, date: NaiveDate) -> Value {
+    let now = practice_time(date, 12, 0);
+    let session = practice::save_at(i, &[scheduled_question(i, label)], false, now).unwrap();
+    submit_on(i, &session, answer, now);
+    session
+}
+
+#[test]
+fn daily_session_survives_restart_and_midnight_without_creating_duplicate_evidence() {
+    let (dir, state) = setup();
+    let date = practice_day(6);
+    let previous = practice_day(5);
+    let session = {
+        let i = state.lock().unwrap();
+        let mistake = mock_draft(&i, &mock_paper(&i));
+        repo::confirm_recommended(&i, &mistake).unwrap();
+        let stats = mastery::stats_on(&i, previous).unwrap();
+        assert_eq!(stats["dailyPractice"]["plan"]["reinforcement"], 5);
+        assert_eq!(stats["dailyPractice"]["dueReviews"], 0);
+        practice::save_at(
+            &i,
+            &[scheduled_question(&i, "晚间题")],
+            true,
+            practice_time(previous, 23, 59),
+        )
+        .unwrap()
+    };
+    drop(state);
+    let state = AppState::new(dir.path().to_owned(), vec![]).unwrap();
+    assert_eq!(
+        tauri::async_runtime::block_on(practice::start(&state)).unwrap(),
+        session
+    );
+    let i = state.lock().unwrap();
+    let daily = |date| mastery::stats_on(&i, date).unwrap()["dailyPractice"].clone();
+    assert_eq!(daily(date)["canResume"], true);
+    let result = submit_on(&i, &session, "15", practice_time(date, 0, 1));
+    assert_eq!(daily(previous)["submitted"], false);
+    assert_eq!(daily(date)["submitted"], true);
+    assert_eq!(daily(date)["canResume"], false);
+    assert_eq!(
+        submit_on(&i, &session, "14", practice_time(date, 0, 2)),
+        result
+    );
+    assert_eq!(count(&i, "answer_attempts"), 1);
+    let extra = practice::save_at(
+        &i,
+        &[scheduled_question(&i, "额外题")],
+        false,
+        practice_time(date, 12, 0),
+    )
+    .unwrap();
+    practice::abandon(&i, &json!({"sessionId":extra["sessionId"]})).unwrap();
+    assert_eq!(daily(date)["canResume"], false);
+    assert_eq!(daily(date)["submitted"], true);
+    assert!(practice::result(&i, text(&extra, "sessionId")).is_err());
+    assert_eq!(count(&i, "answer_attempts"), 1);
+    assert_eq!(daily(date.succ_opt().unwrap())["submitted"], false);
+}
+
+#[test]
+fn scheduled_reviews_replay_valid_variants_and_continue_after_recovery() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    exec(
+        &i.db,
+        "UPDATE practice_schedule_origin SET local_date='2026-03-01'",
+        &[],
+    )
+    .unwrap();
+    let mistake = mock_draft(&i, &mock_paper(&i));
+    repo::confirm_recommended(&i, &mistake).unwrap();
+    exec(&i.db,"UPDATE mistakes SET confirmed_evidence_at=NULL,confirmed_evidence_local_date=NULL WHERE id=?1",&[&mistake]).unwrap();
+    let record = |label, answer, date| record_variant(&i, label, answer, date);
+    let pair = |date| mastery::pairs_on(&i, date).unwrap().remove(0);
+    record("初练一", "15", practice_day(2));
+    record("初练二", "15", practice_day(2));
+    record("初练三", "15", practice_day(2));
+    assert!(!pair(practice_day(2)).mastered);
+    record("次日练习", "15", practice_day(3));
+    assert_eq!(pair(practice_day(3)).review_date, Some(practice_day(10)));
+    record("到期前额外练习", "15", practice_day(9));
+    record("跳过", "", practice_day(10));
+    record("初练一", "15", practice_day(10));
+    assert!(pair(practice_day(10)).review_due);
+    let review = record("第一次到期变式", "15", practice_day(11));
+    assert_eq!(pair(practice_day(11)).review_date, Some(practice_day(25)));
+    record("同日额外练习", "15", practice_day(11));
+    assert_eq!(pair(practice_day(11)).review_date, Some(practice_day(25)));
+    let review_id = &review["questions"][0]["id"];
+    question_review::report(&i, &json!({"questionId":review_id,"reason":"grading"})).unwrap();
+    question_review::resolve(
+        &i,
+        &json!({"questionId":review_id,"action":"void","note":"题目有误"}),
+    )
+    .unwrap();
+    assert_eq!(pair(practice_day(11)).review_date, Some(practice_day(25)));
+    let second = practice_day(25);
+    record("第二次到期变式", "15", second);
+    assert_eq!(pair(second).review_date, Some(second + Days::new(30)));
+    let third = second + Days::new(30);
+    record("隔月变式", "15", third);
+    assert_eq!(pair(third).review_date, Some(third + Days::new(30)));
+    let missed = third + Days::new(30);
+    record("到期失误", "14", missed);
+    assert!(!pair(missed).mastered);
+    assert!(pair(missed).waiting_for_recovery);
+    let next = missed + Days::new(1);
+    assert!(pair(next).review_due);
+    record("复练", "15", next);
+    assert_eq!(pair(next).review_date, None);
+    record("重新巩固", "15", next);
+    record("重新掌握", "15", next + Days::new(1));
+    assert_eq!(
+        pair(next + Days::new(1)).review_date,
+        Some(next + Days::new(8))
+    );
+}
+
+#[test]
+fn early_wrong_answer_clears_the_old_review_until_mastery_is_rebuilt() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    exec(
+        &i.db,
+        "UPDATE practice_schedule_origin SET local_date='2026-03-01'",
+        &[],
+    )
+    .unwrap();
+    let mistake = mock_draft(&i, &mock_paper(&i));
+    repo::confirm_recommended(&i, &mistake).unwrap();
+    exec(&i.db,"UPDATE mistakes SET confirmed_evidence_at=NULL,confirmed_evidence_local_date=NULL WHERE id=?1",&[&mistake]).unwrap();
+    let pair = |day| mastery::pairs_on(&i, practice_day(day)).unwrap().remove(0);
+    for (day, label) in [(1, "初练一"), (2, "初练二"), (3, "初练三")] {
+        record_variant(&i, label, "15", practice_day(day));
+    }
+    assert!(pair(3).mastered);
+    assert_eq!(pair(3).review_date, Some(practice_day(10)));
+
+    record_variant(&i, "到期前答错", "14", practice_day(9));
+    assert_eq!(pair(9).review_date, None);
+    record_variant(&i, "原到期日答对", "15", practice_day(10));
+    let rebuilding = pair(10);
+    assert!(!rebuilding.mastered && !rebuilding.review_due && !rebuilding.waiting_for_recovery);
+    assert_eq!(rebuilding.streak, 1);
+    assert_eq!(rebuilding.review_date, None);
+
+    record_variant(&i, "继续巩固", "15", practice_day(10));
+    assert!(!pair(10).mastered);
+    record_variant(&i, "次日重新掌握", "15", practice_day(11));
+    assert!(pair(11).mastered);
+    assert_eq!(pair(11).review_date, Some(practice_day(18)));
+}
+
+#[test]
+fn simultaneous_submissions_of_one_session_create_only_one_attempt() {
+    let (_dir, state) = setup();
+    let session = {
+        let i = state.lock().unwrap();
+        let mistake = mock_draft(&i, &mock_paper(&i));
+        repo::confirm_recommended(&i, &mistake).unwrap();
+        practice::save_at(
+            &i,
+            &[scheduled_question(&i, "并发提交题")],
+            true,
+            Utc::now(),
+        )
+        .unwrap()
+    };
+    let gate = Barrier::new(2);
+    let submit = |answer: &str| {
+        let input = json!({"sessionId":session["sessionId"],"answers":
+            [{"questionId":session["questions"][0]["id"],"answer":answer}]
+        });
+        gate.wait();
+        dispatch(&state, "submitPractice", &input).unwrap()
+    };
+    let (first, second) = thread::scope(|scope| {
+        let first = scope.spawn(|| submit("15"));
+        let second = scope.spawn(|| submit("14"));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert_eq!(first, second);
+    let i = state.lock().unwrap();
+    assert_eq!(count(&i, "answer_attempts"), 1);
+    let attempt = one(&i.db, "SELECT outcome FROM answer_attempts", &[])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        first["correctCount"],
+        if attempt["outcome"] == "correct" {
+            1
+        } else {
+            0
+        }
+    );
+}
+
+#[test]
+fn switching_time_zones_keeps_recorded_local_dates_for_review_scheduling() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    exec(
+        &i.db,
+        "UPDATE practice_schedule_origin SET local_date='2026-03-01'",
+        &[],
+    )
+    .unwrap();
+    let mistake = mock_draft(&i, &mock_paper(&i));
+    repo::confirm_recommended(&i, &mistake).unwrap();
+    exec(&i.db,"UPDATE mistakes SET confirmed_evidence_at=NULL,confirmed_evidence_local_date=NULL WHERE id=?1",&[&mistake]).unwrap();
+    let west = FixedOffset::west_opt(8 * 3600).unwrap();
+    let east = FixedOffset::east_opt(8 * 3600).unwrap();
+    let submit = |hour, zone, label, daily| {
+        let utc = Utc.with_ymd_and_hms(2026, 3, 2, hour, 0, 0).unwrap();
+        let session = practice::save_at(&i, &[scheduled_question(&i, label)], daily, utc).unwrap();
+        practice::submit_at(
+            &i,
+            &json!({"sessionId":session["sessionId"],"answers":
+                [{"questionId":session["questions"][0]["id"],"answer":"15"}]}),
+            utc.with_timezone(&zone),
+        )
+        .unwrap();
+    };
+    submit(1, west, "西区第一题", true);
+    submit(2, west, "西区第二题", false);
+    assert!(!mastery::pairs_on(&i, practice_day(1)).unwrap()[0].mastered);
+    submit(3, east, "东区第一题", true);
+    let pair = &mastery::pairs_on(&i, practice_day(2)).unwrap()[0];
+    assert!(pair.mastered);
+    assert_eq!(pair.review_date, Some(practice_day(9)));
+    assert_eq!(
+        json!(query(
+            &i.db,
+            "SELECT local_date, created_at FROM answer_attempts ORDER BY created_at",
+            &[]
+        )
+        .unwrap()),
+        json!([
+            {"local_date":"2026-03-01","created_at":"2026-03-02T01:00:00.000Z"},
+            {"local_date":"2026-03-01","created_at":"2026-03-02T02:00:00.000Z"},
+            {"local_date":"2026-03-02","created_at":"2026-03-02T03:00:00.000Z"}
+        ])
+    );
+    for day in [practice_day(1), practice_day(2)] {
+        assert_eq!(
+            mastery::stats_on(&i, day).unwrap()["dailyPractice"]["submitted"],
+            true
+        );
+    }
+}
+
+#[test]
+fn v7_upgrade_preserves_evidence_and_seeds_a_review_after_upgrade_day() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("zero-defect.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    db::migrate(&old, None, 7).unwrap();
+    old.execute_batch(
+        "INSERT INTO mistakes(id,question_markdown,grade,semester,knowledge_point_id,status,created_at,updated_at)
+         VALUES ('old-mistake','旧原题',3,1,'mul_two_digit','active','2026-01-01T12:00:00Z','2026-01-01T12:00:00Z');
+         INSERT INTO mistake_root_causes(mistake_id,root_cause_id,confirmed,is_primary) VALUES ('old-mistake','carry_omission',1,1);
+         INSERT INTO practice_sessions(id,practice_date,status,created_at) VALUES ('old','2026-01-02','submitted','2026-01-02T12:00:00Z');
+         WITH examples(id,stamp) AS (VALUES ('question-1','2026-01-02T12:00:00Z'),('question-2','2026-01-03T12:00:00Z'),('question-3','2026-01-03T12:01:00Z'))
+         INSERT INTO practice_questions(id,session_id,root_cause_id,knowledge_point_id,question_markdown,answer_type,correct_answer,difficulty,status,created_at)
+         SELECT id,'old','carry_omission','mul_two_digit',id,'number','15',1,'answered',stamp FROM examples;
+         INSERT INTO answer_attempts(id,practice_question_id,root_cause_id,knowledge_point_id,submitted_answer,is_correct,created_at,outcome)
+         SELECT id,id,root_cause_id,knowledge_point_id,'15',1,created_at,'correct' FROM practice_questions;"
+    ).unwrap();
+    drop(old);
+    let state = AppState::new(dir.path().to_path_buf(), vec![]).unwrap();
+    let i = state.lock().unwrap();
+    let origin = one(
+        &i.db,
+        "SELECT local_date FROM practice_schedule_origin",
+        &[],
+    )
+    .unwrap()
+    .unwrap();
+    let today = text(&origin, "local_date").parse::<NaiveDate>().unwrap();
+    let pair = mastery::pairs_on(&i, today).unwrap().remove(0);
+    assert!(pair.mastered && !pair.review_due);
+    let due = pair.review_date.unwrap();
+    assert!(due > today && due <= today + Days::new(7));
+    assert!(mastery::pairs_on(&i, due).unwrap()[0].review_due);
+    assert_eq!(count(&i, "answer_attempts"), 3);
+    assert_eq!(one(&i.db,"SELECT local_date,created_at,submitted_answer FROM answer_attempts WHERE id='question-1'",&[]).unwrap().unwrap(),
+        json!({"local_date": db::local_date("2026-01-02T12:00:00Z").unwrap(),"created_at":"2026-01-02T12:00:00Z","submitted_answer":"15"}));
+    assert_eq!(
+        mastery::stats_on(&i, today).unwrap()["dailyPractice"]["submitted"],
+        false
+    );
+    assert_eq!(fs::read_dir(dir.path().join("backups")).unwrap().count(), 1);
+}
+
+#[test]
+fn guided_recheck_only_counts_a_comparable_new_variant_after_local_midnight() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    let mistake = mock_draft(&i, &mock_paper(&i));
+    repo::confirm_recommended(&i, &mistake).unwrap();
+    let hint_day = practice_day(6);
+    let tomorrow = practice_day(7);
+    let original = record_variant(&i, "引导前的题", "14", hint_day);
+    let original_id = &original["questions"][0]["id"];
+    revision::request_hint(&i, &json!({"questionId":original_id,"step":1})).unwrap();
+    exec(
+        &i.db,
+        "UPDATE practice_questions SET revision_hint_at=?1,revision_hint_local_date=?2 WHERE id=?3",
+        &[
+            &db::stamp(practice_time(hint_day, 23, 58)),
+            &hint_day.to_string(),
+            &original_id.as_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let stats = |day| mastery::stats_on(&i, day).unwrap();
+    let now = practice_time(hint_day, 23, 59);
+    let same_day =
+        practice::save_at(&i, &[scheduled_question(&i, "当天新题")], false, now).unwrap();
+    submit_on(&i, &same_day, "15", now);
+    assert_eq!(stats(hint_day)["crossDayRecheck"]["waiting"], 1);
+    assert_eq!(stats(hint_day)["guidedRecheck"]["completed"], 1);
+    assert_eq!(stats(tomorrow)["dailyPractice"]["plan"]["recheck"], 1);
+    let mut harder = scheduled_question(&i, "更难的变式");
+    harder.level = Some(state::PracticeDifficulty::Hard);
+    let midnight = practice_time(tomorrow, 0, 1);
+    let different = practice::save_at(&i, &[harder], false, midnight).unwrap();
+    submit_on(&i, &different, "15", midnight);
+    record_variant(&i, "当天新题", "15", tomorrow);
+    record_variant(&i, "跳过变式", "", tomorrow);
+    assert_eq!(stats(tomorrow)["crossDayRecheck"]["due"], 1);
+    let measured = record_variant(&i, "次日新题", "15", tomorrow);
+    assert_eq!(
+        stats(tomorrow)["crossDayRecheck"],
+        json!({"waiting":0,"due":0,"completed":1,"correct":1})
+    );
+    let question_id = &measured["questions"][0]["id"];
+    question_review::report(&i, &json!({"questionId":question_id,"reason":"grading"})).unwrap();
+    question_review::resolve(
+        &i,
+        &json!({"questionId":question_id,"action":"void","note":"题目有误"}),
+    )
+    .unwrap();
+    assert_eq!(stats(tomorrow)["crossDayRecheck"]["due"], 1);
 }
 fn count(i: &state::Inner, table: &str) -> i64 {
     one(&i.db, &format!("SELECT COUNT(*) n FROM {table}"), &[])
@@ -51,10 +433,10 @@ fn mock_draft(i: &state::Inner, pid: &str) -> String {
     .to_owned()
 }
 #[test]
-fn fresh_database_has_all_seven_versions_and_taxonomy() {
+fn fresh_database_has_all_eight_versions_and_taxonomy() {
     let (_d, s) = setup();
     let i = s.lock().unwrap();
-    assert_eq!(count(&i, "schema_migrations"), 7);
+    assert_eq!(count(&i, "schema_migrations"), 8);
     let t = repo::taxonomy(&i).unwrap();
     assert!(t["causes"]
         .as_array()
@@ -342,12 +724,15 @@ fn confirm_practice_submit_revise_delete_preserves_history() {
         solution: "12+1=13".into(),
         figure: Value::Null,
         solver: "13".into(),
+        level: None,
         pair: Pair {
             cause: "carry_omission".into(),
             point: "mul_two_digit".into(),
             mastered: false,
             streak: 0,
             review_due: false,
+            review_date: None,
+            waiting_for_recovery: false,
             unsure_due: false,
         },
     };
@@ -365,7 +750,11 @@ fn confirm_practice_submit_revise_delete_preserves_history() {
     assert_eq!(result["skippedCount"], 1);
     assert_eq!(count(&i, "answer_attempts"), 2);
     assert_eq!(mastery::stats(&i).unwrap()["answeredCount"], 1);
-    assert!(practice::submit(&i, &json!({"sessionId":sid,"answers":[]})).is_err());
+    assert_eq!(
+        practice::submit(&i, &json!({"sessionId":sid,"answers":[]})).unwrap(),
+        result
+    );
+    assert_eq!(count(&i, "answer_attempts"), 2);
     assert_eq!(
         practice::revise(&i, &json!({"questionId":qid,"answer":"12"})).unwrap()["correctAnswer"],
         Value::Null
@@ -412,7 +801,7 @@ fn cross_day_mastery_ignores_skips_and_blank_paper_but_unsure_schedules_a_varian
     );
     exec(
         &i.db,
-        "UPDATE mistakes SET confirmed_evidence_at='2026-03-01T12:00:00Z' WHERE id=?1",
+        "UPDATE mistakes SET confirmed_evidence_at='2026-03-01T12:00:00Z',confirmed_evidence_local_date='2026-03-01' WHERE id=?1",
         &[&mistake],
     )
     .unwrap();
@@ -425,6 +814,7 @@ fn cross_day_mastery_ignores_skips_and_blank_paper_but_unsure_schedules_a_varian
         solution: "15".into(),
         figure: Value::Null,
         solver: "15".into(),
+        level: None,
         pair: mastery::pairs(&i).unwrap().remove(0),
     };
     let submit = |session: &Value, answers: Value, stamp: Option<&str>| {
@@ -434,7 +824,7 @@ fn cross_day_mastery_ignores_skips_and_blank_paper_but_unsure_schedules_a_varian
         )
         .unwrap();
         if let Some(stamp) = stamp {
-            exec(&i.db,"UPDATE answer_attempts SET created_at=?1 WHERE practice_question_id IN (SELECT id FROM practice_questions WHERE session_id=?2)",&[&stamp,&text(session,"sessionId")]).unwrap();
+            exec(&i.db,"UPDATE answer_attempts SET created_at=?1,local_date=NULL WHERE practice_question_id IN (SELECT id FROM practice_questions WHERE session_id=?2)",&[&stamp,&text(session,"sessionId")]).unwrap();
         }
         result
     };
@@ -485,7 +875,7 @@ fn cross_day_mastery_ignores_skips_and_blank_paper_but_unsure_schedules_a_varian
     );
     assert_eq!(result["unsureCount"], 1);
     assert_eq!(result["wrongCount"], 0);
-    let pair = mastery::pairs(&i).unwrap().remove(0);
+    let pair = mastery::pairs_on(&i, practice_day(4)).unwrap().remove(0);
     assert!(pair.mastered && pair.unsure_due && !pair.review_due);
     assert_eq!(mastery::stats(&i).unwrap()["practiceablePairs"], 1);
     assert_eq!(mastery::stats(&i).unwrap()["answeredCount"], 4);
@@ -746,12 +1136,15 @@ fn optional_guidance_rechecks_only_a_new_independent_first_answer() {
         solution: "12×13=156".into(),
         figure: Value::Null,
         solver: "156".into(),
+        level: None,
         pair: Pair {
             cause: "carry_omission".into(),
             point: "mul_two_digit".into(),
             mastered: false,
             streak: 0,
             review_due: false,
+            review_date: None,
+            waiting_for_recovery: false,
             unsure_due: false,
         },
     };
@@ -902,6 +1295,7 @@ fn review_before_submission_keeps_answers_private_and_never_creates_evidence() {
         solution: "解析".into(),
         figure: Value::Null,
         solver: "156".into(),
+        level: None,
         pair: mastery::pairs(&i).unwrap().remove(0),
     };
     let session = practice::save(
@@ -1014,27 +1408,6 @@ fn answers_preserve_original_comparison_rules() {
     }
 }
 #[test]
-fn mastery_requires_multiple_days_and_resets_on_wrong() {
-    fn date(day: u32) -> String {
-        format!("2026-11-{day:02}T10:00:00Z")
-    }
-    let now = DateTime::parse_from_rfc3339(&date(11))
-        .unwrap()
-        .with_timezone(&Utc);
-    let events = vec![
-        (false, date(1)),
-        (true, date(2)),
-        (true, date(3)),
-        (true, date(4)),
-    ];
-    assert_eq!(mastery::evaluate(&events, now), (true, 3, true));
-    let mut reset = events.clone();
-    reset.push((false, date(5)));
-    assert_eq!(mastery::evaluate(&reset, now), (false, 0, false));
-    let same = vec![(true, date(2)), (true, date(2)), (true, date(2))];
-    assert!(!mastery::evaluate(&same, now).0);
-}
-#[test]
 fn parsing_and_postprocessing_keep_guardrails() {
     assert_eq!(
         ai::extract_json("推理 {a} 最后 {\"answer\":\"13\"}").unwrap()["answer"],
@@ -1140,6 +1513,8 @@ fn cross_language_parity_with_original_backend() {
         mastered: false,
         streak: 0,
         review_due: false,
+        review_date: None,
+        waiting_for_recovery: false,
         unsure_due: false,
     };
     for case in fixtures["practice"].as_array().unwrap() {
@@ -1283,6 +1658,41 @@ fn ai_http_recognition_and_practice_flow() {
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0]["enable_thinking"], false);
     assert!(!requests[1]["messages"].to_string().contains("正确答案:13"));
+    let now = Utc::now();
+    let today = now.with_timezone(&Local).date_naive();
+    {
+        let i = state.lock().unwrap();
+        assert_eq!(submit_on(&i, &session, "13", now)["correctCount"], 1);
+        assert_eq!(
+            mastery::stats_on(&i, today).unwrap()["dailyPractice"]["submitted"],
+            true
+        );
+    }
+    let generated = json!({"questions":[
+        {"question_markdown":"12 + 1 = ?","answer_type":"number","correct_answer":"13"},
+        {"question_markdown":"13+2=?","answer_type":"number","correct_answer":"15"}
+    ]});
+    let (endpoint, server) = mock_ai(vec![
+        (200, reply(&generated.to_string())),
+        (200, reply("{\"answer\":\"15\"}")),
+    ]);
+    state.ai_endpoint = endpoint;
+    let extra = tauri::async_runtime::block_on(practice::start(&state)).unwrap();
+    assert_ne!(extra["sessionId"], session["sessionId"]);
+    assert_eq!(extra["questions"].as_array().unwrap().len(), 1);
+    assert_eq!(extra["questions"][0]["questionMarkdown"], "13+2=?");
+    assert_eq!(server.join().unwrap().len(), 2);
+    let i = state.lock().unwrap();
+    submit_on(&i, &extra, "15", now);
+    assert_eq!(
+        query(
+            &i.db,
+            "SELECT is_daily FROM practice_sessions ORDER BY rowid",
+            &[]
+        )
+        .unwrap(),
+        vec![json!({"is_daily":1}), json!({"is_daily":0})]
+    );
 }
 #[test]
 fn ai_auth_failure_is_readable_and_never_retried() {

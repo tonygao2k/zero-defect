@@ -1,8 +1,10 @@
 use crate::{
-    db::{one, query, text, AppResult},
-    state::Inner,
+    db::{self, one, parsed, query, text, AppResult},
+    practice::question_key,
+    schedule::Projection,
+    state::{Inner, PracticeDifficulty},
 };
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Days, Local, NaiveDate};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 #[derive(Clone, Debug)]
@@ -12,19 +14,29 @@ pub struct Pair {
     pub mastered: bool,
     pub streak: usize,
     pub review_due: bool,
+    pub review_date: Option<NaiveDate>,
+    pub waiting_for_recovery: bool,
     pub unsure_due: bool,
 }
 
 impl Pair {
-    pub fn pending_guidance<'a>(&self, rechecks: &'a GuidedRechecks) -> Option<&'a str> {
+    fn guidance<'a>(&self, rechecks: &'a GuidedRechecks) -> Option<&'a GuidedRecheck> {
         rechecks
             .get(&(self.cause.clone(), self.point.clone()))
-            .filter(|recheck| recheck.correct.is_none())
+            .filter(|recheck| recheck.cross_day_correct.is_none() && recheck.due)
+    }
+
+    pub fn pending_guidance<'a>(&self, rechecks: &'a GuidedRechecks) -> Option<&'a str> {
+        self.guidance(rechecks)
             .map(|recheck| recheck.since.as_str())
     }
 
+    pub fn pending_guidance_level(&self, rechecks: &GuidedRechecks) -> Option<PracticeDifficulty> {
+        self.guidance(rechecks).map(|recheck| recheck.level.clone())
+    }
+
     pub fn practiceable(&self, rechecks: &GuidedRechecks) -> bool {
-        !self.mastered
+        (!self.mastered && !self.waiting_for_recovery)
             || self.review_due
             || self.unsure_due
             || self.pending_guidance(rechecks).is_some()
@@ -34,90 +46,124 @@ impl Pair {
 pub struct GuidedRecheck {
     pub since: String,
     pub correct: Option<bool>,
+    pub cross_day_correct: Option<bool>,
+    pub due: bool,
+    pub level: PracticeDifficulty,
 }
 
 pub type GuidedRechecks = HashMap<(String, String), GuidedRecheck>;
 
-pub fn guided_rechecks(i: &Inner) -> AppResult<GuidedRechecks> {
+pub fn guided_rechecks(i: &Inner, today: NaiveDate) -> AppResult<GuidedRechecks> {
     let rows = query(
         &i.db,
         "WITH guidance AS (
-            SELECT q.root_cause_id,q.knowledge_point_id,q.session_id,q.revision_hint_at,ROW_NUMBER() OVER (
+            SELECT q.root_cause_id,q.knowledge_point_id,q.session_id,q.revision_hint_at,q.difficulty,
+                COALESCE(q.revision_hint_local_date,date(q.revision_hint_at,'localtime')) hint_day,ROW_NUMBER() OVER (
                 PARTITION BY q.root_cause_id,q.knowledge_point_id ORDER BY q.revision_hint_at DESC,q.question_order DESC
             ) newest
             FROM valid_practice_questions q WHERE q.revision_hint_at IS NOT NULL
+         ), candidates AS (
+            SELECT a.*,q.rowid question_order,q.difficulty,q.question_markdown,q.figure_json
+            FROM independent_practice_evidence a JOIN practice_questions q ON q.id=a.practice_question_id
          )
-         SELECT g.root_cause_id cause,g.knowledge_point_id point,g.revision_hint_at since,(
-            SELECT a.outcome='correct' FROM independent_practice_evidence a
-            JOIN practice_questions q ON q.id=a.practice_question_id
-            WHERE a.root_cause_id=g.root_cause_id AND a.knowledge_point_id=g.knowledge_point_id
-              AND a.created_at>=g.revision_hint_at
-              AND q.session_id<>g.session_id
+         SELECT g.root_cause_id cause,g.knowledge_point_id point,g.revision_hint_at since,g.hint_day<?1 due,
+                   g.hint_day,g.difficulty,a.outcome='correct' correct,a.question_order,
+                   a.difficulty answer_difficulty,COALESCE(a.local_date,date(a.created_at,'localtime')) answer_day
+            FROM guidance g LEFT JOIN candidates a
+              ON a.root_cause_id=g.root_cause_id AND a.knowledge_point_id=g.knowledge_point_id
+              AND julianday(a.created_at)>=julianday(g.revision_hint_at) AND a.session_id<>g.session_id
               AND NOT EXISTS (
                   SELECT 1 FROM practice_questions seen WHERE seen.session_id=g.session_id
-                    AND seen.question_markdown=q.question_markdown
-                    AND COALESCE(seen.figure_json,'null')=COALESCE(q.figure_json,'null')
+                    AND seen.question_markdown=a.question_markdown
+                    AND COALESCE(seen.figure_json,'null')=COALESCE(a.figure_json,'null')
               )
-            ORDER BY a.created_at,a.attempt_order LIMIT 1
-         ) correct FROM guidance g WHERE g.newest=1",
-        &[],
+            WHERE g.newest=1 ORDER BY cause,point,julianday(a.created_at),a.attempt_order",
+        &[&today.to_string()],
     )?;
-    Ok(rows
+    let mut result = HashMap::new();
+    for group in rows
+        .chunk_by(|left, right| left["cause"] == right["cause"] && left["point"] == right["point"])
+    {
+        let first = &group[0];
+        let cause = text(first, "cause");
+        let point = text(first, "point");
+        let candidates = group.iter().filter(|row| row["correct"].is_i64());
+        let correct = candidates.clone().next().map(|row| row["correct"] == 1);
+        let mut cross_day = candidates
+            .filter(|row| {
+                row["answer_difficulty"] == row["difficulty"]
+                    && text(row, "answer_day") > text(row, "hint_day")
+                    && !text(row, "hint_day").is_empty()
+            })
+            .peekable();
+        let cross_day_correct = if cross_day.peek().is_some() {
+            let variants = variant_orders(i, cause, point)?;
+            cross_day
+                .find(|row| {
+                    row["question_order"]
+                        .as_i64()
+                        .is_some_and(|order| variants.contains(&order))
+                })
+                .map(|row| row["correct"] == 1)
+        } else {
+            None
+        };
+        result.insert(
+            (cause.into(), point.into()),
+            GuidedRecheck {
+                since: text(first, "since").into(),
+                correct,
+                cross_day_correct,
+                due: first["due"] == 1,
+                level: PracticeDifficulty::from_code(first["difficulty"].as_i64().unwrap_or(1)),
+            },
+        );
+    }
+    Ok(result)
+}
+
+fn variant_orders(i: &Inner, cause: &str, point: &str) -> AppResult<HashSet<i64>> {
+    let originals = query(&i.db,"SELECT m.question_markdown FROM mistakes m JOIN mistake_root_causes cause ON cause.mistake_id=m.id AND cause.is_primary=1 WHERE cause.root_cause_id=?1 AND m.knowledge_point_id=?2 AND m.status='active'",&[&cause,&point])?;
+    let original_keys = originals
         .iter()
-        .map(|row| {
-            (
-                (text(row, "cause").into(), text(row, "point").into()),
-                GuidedRecheck {
-                    since: text(row, "since").into(),
-                    correct: row["correct"].as_i64().map(|correct| correct != 0),
-                },
-            )
+        .map(|row| question_key(text(row, "question_markdown"), &Value::Null).0)
+        .collect::<HashSet<_>>();
+    let history = query(&i.db,"SELECT rowid question_order,question_markdown,figure_json FROM practice_questions WHERE root_cause_id=?1 AND knowledge_point_id=?2 ORDER BY rowid",&[&cause,&point])?;
+    let mut keys = HashSet::new();
+    Ok(history
+        .iter()
+        .filter_map(|row| {
+            let key = question_key(text(row, "question_markdown"), &parsed(row, "figure_json"));
+            if original_keys.contains(&key.0) || !keys.insert(key) {
+                None
+            } else {
+                row["question_order"].as_i64()
+            }
         })
         .collect())
 }
-pub fn evaluate(events: &[(bool, String)], now: DateTime<Utc>) -> (bool, usize, bool) {
-    let mut events = events.to_vec();
-    events.sort_by(|a, b| a.1.cmp(&b.1));
-    let mut streak = 0;
-    let mut days = HashSet::new();
-    let mut mastered_at = None;
-    let mut attempts = 0;
-    for (correct, at) in events {
-        if !correct {
-            streak = 0;
-            days.clear();
-            mastered_at = None;
-            attempts = 0;
-            continue;
-        }
-        streak += 1;
-        let parsed = DateTime::parse_from_rfc3339(&at).ok();
-        if let Some(date) = parsed {
-            days.insert(date.with_timezone(&Local).format("%Y-%m-%d").to_string());
-        }
-        if mastered_at.is_some() {
-            attempts += 1;
-        } else if streak >= 3 && days.len() >= 2 {
-            mastered_at = parsed.map(|d| d.with_timezone(&Utc));
-            attempts = 0;
-        }
-    }
-    (
-        mastered_at.is_some(),
-        streak,
-        mastered_at.is_some_and(|d| {
-            attempts == 0 && now.signed_duration_since(d).num_seconds() >= 7 * 86400
-        }),
-    )
-}
+#[cfg(test)]
 pub fn pairs(i: &Inner) -> AppResult<Vec<Pair>> {
+    pairs_on(i, Local::now().date_naive())
+}
+
+pub fn pairs_on(i: &Inner, today: NaiveDate) -> AppResult<Vec<Pair>> {
+    let origin = one(
+        &i.db,
+        "SELECT local_date FROM practice_schedule_origin",
+        &[],
+    )?
+    .and_then(|row| text(&row, "local_date").parse::<NaiveDate>().ok())
+    .ok_or("找不到复习排程的起始日期")?;
     let rows=query(&i.db,"SELECT DISTINCT mrc.root_cause_id cause,m.knowledge_point_id point FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id=m.id AND mrc.is_primary=1 WHERE m.status='active' AND m.knowledge_point_id IS NOT NULL AND m.grade=?1 AND(m.semester IS NULL OR m.semester=?2)",&[&i.settings.grade,&i.settings.semester])?;
     let mut out = Vec::new();
     for row in rows {
         let cause = text(&row, "cause").to_owned();
         let point = text(&row, "point").to_owned();
-        let mistakes=query(&i.db,"SELECT m.confirmed_evidence_at at FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id=m.id AND mrc.is_primary=1 WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2 AND m.confirmed_evidence_at IS NOT NULL AND m.grade=?3 AND (m.semester IS NULL OR m.semester=?4) ORDER BY m.rowid",&[&cause,&point,&i.settings.grade,&i.settings.semester])?;
-        let attempts=query(&i.db,"SELECT outcome='correct' correct, created_at at FROM independent_practice_evidence WHERE root_cause_id=?1 AND knowledge_point_id=?2 ORDER BY created_at,attempt_order",&[&cause,&point])?;
+        let mistakes=query(&i.db,"SELECT m.confirmed_evidence_at at,m.confirmed_evidence_local_date day FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id=m.id AND mrc.is_primary=1 WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2 AND m.confirmed_evidence_at IS NOT NULL AND m.grade=?3 AND (m.semester IS NULL OR m.semester=?4) ORDER BY m.rowid",&[&cause,&point,&i.settings.grade,&i.settings.semester])?;
+        let attempts=query(&i.db,"SELECT a.outcome='correct' correct,a.created_at at,a.local_date day,q.question_order
+            FROM independent_practice_evidence a JOIN valid_practice_questions q ON q.id=a.practice_question_id
+            WHERE a.root_cause_id=?1 AND a.knowledge_point_id=?2 ORDER BY a.created_at,a.attempt_order",&[&cause,&point])?;
         let unsure_due = one(
             &i.db,
             "SELECT EXISTS (
@@ -136,30 +182,70 @@ pub fn pairs(i: &Inner) -> AppResult<Vec<Pair>> {
             ) due",
             &[&cause, &point],
         )?.is_some_and(|row| row["due"]==1);
+        let variants = if attempts.is_empty() {
+            HashSet::new()
+        } else {
+            variant_orders(i, &cause, &point)?
+        };
         let mut events = mistakes
             .iter()
-            .map(|m| (false, text(m, "at").to_owned()))
+            .filter(|row| !row["at"].is_null())
+            .map(|row| (row, false, false))
             .collect::<Vec<_>>();
-        events.extend(
-            attempts
-                .iter()
-                .map(|a| (a["correct"] == 1, text(a, "at").to_owned())),
-        );
-        let (mastered, streak, review_due) = evaluate(&events, Utc::now());
+        events.extend(attempts.iter().map(|row| {
+            (
+                row,
+                row["correct"] == 1,
+                row["question_order"]
+                    .as_i64()
+                    .is_some_and(|position| variants.contains(&position)),
+            )
+        }));
+        events.sort_by_key(|(row, _, _)| DateTime::parse_from_rfc3339(text(row, "at")).ok());
+        let stagger = cause
+            .bytes()
+            .chain(point.bytes())
+            .map(u64::from)
+            .sum::<u64>()
+            % 7;
+        let legacy_start = origin + Days::new(1 + stagger);
+        let mut projection = Projection::default();
+        for (row, correct, variant) in events {
+            if let Some(day) = text(row, "day")
+                .parse()
+                .ok()
+                .or_else(|| db::local_date(text(row, "at")))
+            {
+                projection.record(
+                    day,
+                    correct,
+                    variant && day >= origin,
+                    if day < origin { legacy_start } else { day },
+                );
+            }
+        }
+        let review_date = projection.review.map(|review| review.due);
         out.push(Pair {
             cause,
             point,
-            mastered,
-            streak,
-            review_due,
+            mastered: projection.mastered,
+            streak: projection.streak,
+            review_due: review_date.is_some_and(|day| day <= today),
+            review_date,
+            waiting_for_recovery: projection.waiting_for_recovery(today),
             unsure_due,
         });
     }
     Ok(out)
 }
 pub fn stats(i: &Inner) -> AppResult<Value> {
-    let pairs = pairs(i)?;
-    let rechecks = guided_rechecks(i)?;
+    stats_on(i, Local::now().date_naive())
+}
+
+pub fn stats_on(i: &Inner, today: NaiveDate) -> AppResult<Value> {
+    let pairs = pairs_on(i, today)?;
+    let rechecks = guided_rechecks(i, today)?;
+    let daily = crate::practice::daily_status(i, today, &pairs, &rechecks)?;
     let guided = pairs
         .iter()
         .filter_map(|pair| rechecks.get(&(pair.cause.clone(), pair.point.clone())))
@@ -182,7 +268,14 @@ pub fn stats(i: &Inner) -> AppResult<Value> {
         "mistakeCount":count,"knowledgePointCount":by_point.len(),"answeredCount":answered,
         "masteredKnowledgePoints":mastered,"remainingKnowledgePoints":by_point.len()-mastered,
         "practiceablePairs":pairs.iter().filter(|p|p.practiceable(&rechecks)).count(),
+        "dailyPractice":daily,
         "unsureRecheckPending":pairs.iter().filter(|p|p.unsure_due).count(),
+        "crossDayRecheck":{
+            "waiting":guided.iter().filter(|item|item.cross_day_correct.is_none() && !item.due).count(),
+            "due":guided.iter().filter(|item|item.cross_day_correct.is_none() && item.due).count(),
+            "completed":guided.iter().filter(|item|item.cross_day_correct.is_some()).count(),
+            "correct":guided.iter().filter(|item|item.cross_day_correct==Some(true)).count()
+        },
         "guidedRecheck":{
             "pending":guided.iter().filter(|item|item.correct.is_none()).count(),
             "completed":guided.iter().filter(|item|item.correct.is_some()).count(),
