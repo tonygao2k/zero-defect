@@ -3,12 +3,13 @@ use crate::{
     answers,
     db::{self, exec, one, parsed, query, text, transaction, AppResult},
     figure,
-    mastery::{self, Pair},
-    repo,
+    mastery::{self, GuidedRechecks, Pair},
+    repo, revision,
     state::{AppState, Inner, PracticeDifficulty},
 };
 use regex::Regex;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct Question {
@@ -136,6 +137,25 @@ fn session(i: &Inner, id: &str) -> AppResult<Value> {
         json!({"sessionId":id,"questions":rows.iter().map(|q|json!({"id":q["id"],"position":q["position"],"questionMarkdown":q["question_markdown"],"answerType":q["answer_type"],"options":parsed(q,"options_json").as_array().cloned().unwrap_or_default(),"unit":text(q,"answer_unit"),"figure":figure::validate(&parsed(q,"figure_json")).unwrap_or(Value::Null)})).collect::<Vec<_>>()}),
     )
 }
+
+fn select_pairs(mut pairs: Vec<Pair>, rechecks: &GuidedRechecks) -> Vec<Pair> {
+    pairs.retain(|pair| !pair.mastered || pair.review_due);
+    pairs.sort_by_key(|pair| (pair.mastered, pair.streak));
+    if let Some((index, _)) = pairs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pair)| {
+            let recheck = rechecks.get(&(pair.cause.clone(), pair.point.clone()))?;
+            recheck.correct.is_none().then_some((index, &recheck.since))
+        })
+        .min_by_key(|(_, since)| *since)
+    {
+        pairs[..=index].rotate_right(1);
+    }
+    pairs.truncate(5);
+    pairs
+}
+
 pub async fn start(state: &AppState) -> AppResult<Value> {
     // Serialize generation only; no database lock is held during HTTP requests.
     let _gate = state.practice_gate.lock().await;
@@ -144,12 +164,7 @@ pub async fn start(state: &AppState) -> AppResult<Value> {
         exec(&i.db,"UPDATE practice_sessions SET status='completed',completed_at=?1 WHERE status='submitted'",&[&db::now()])?;
         if let Some(p)=one(&i.db,"SELECT id FROM practice_sessions WHERE status='pending' ORDER BY created_at DESC LIMIT 1",&[])?{return session(&i,text(&p,"id"));}
         let key = i.require_key()?;
-        let mut pairs = mastery::pairs(&i)?
-            .into_iter()
-            .filter(|p| !p.mastered || p.review_due)
-            .collect::<Vec<_>>();
-        pairs.sort_by_key(|p| (p.mastered, p.streak));
-        pairs.truncate(5);
+        let pairs = select_pairs(mastery::pairs(&i)?, &mastery::guided_rechecks(&i)?);
         if pairs.is_empty() {
             return Err(
                 "现在没有需要练习的内容。先去错题库确认错题,或者等已掌握的知识点到了复习时间再来"
@@ -207,9 +222,18 @@ async fn make_questions(
         let i = state.lock()?;
         let info=one(&i.db,"SELECT kp.label kp,rc.label cause,COALESCE(rc.description,'') description FROM knowledge_points kp,root_causes rc WHERE kp.id=?1 AND rc.id=?2",&[&pair.point,&pair.cause])?.ok_or("知识点或归因不存在")?;
         let examples=query(&i.db,"SELECT m.question_markdown question,COALESCE(m.student_answer,'') studentAnswer,m.analysis_json aj FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id=m.id AND mrc.is_primary=1 WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2 ORDER BY m.updated_at DESC LIMIT 2",&[&pair.cause,&pair.point])?;
-        let avoid=query(&i.db,"SELECT question_markdown q FROM practice_questions WHERE root_cause_id=?1 AND knowledge_point_id=?2 ORDER BY created_at DESC LIMIT 10",&[&pair.cause,&pair.point])?;
+        let avoid=query(&i.db,"SELECT question_markdown q,figure_json FROM practice_questions WHERE root_cause_id=?1 AND knowledge_point_id=?2 ORDER BY created_at DESC LIMIT 10",&[&pair.cause,&pair.point])?;
         (info, examples, avoid)
     };
+    let seen = examples
+        .iter()
+        .map(|example| question_key(text(example, "question"), &Value::Null))
+        .chain(
+            avoid
+                .iter()
+                .map(|prior| question_key(text(prior, "q"), &parsed(prior, "figure_json"))),
+        )
+        .collect::<HashSet<_>>();
     let examples = examples
         .iter()
         .enumerate()
@@ -267,7 +291,11 @@ async fn make_questions(
         )
         .await?;
         if let Some(value) = extract_json(&reply.content) {
-            drafts = parse_questions(&value, pair);
+            let mut seen = seen.clone();
+            drafts = parse_questions(&value, pair)
+                .into_iter()
+                .filter(|question| seen.insert(question_key(&question.markdown, &question.figure)))
+                .collect();
         }
         if !drafts.is_empty() {
             break;
@@ -305,6 +333,9 @@ async fn make_questions(
         }
     }
     Ok(verified)
+}
+fn question_key(markdown: &str, figure: &Value) -> (String, String) {
+    (markdown.split_whitespace().collect(), figure.to_string())
 }
 pub fn save(i: &Inner, questions: &[Question]) -> AppResult<Value> {
     let session_id = db::id();
@@ -411,10 +442,7 @@ pub fn revise(i: &Inner, input: &Value) -> AppResult<Value> {
         .as_str()
         .filter(|a| a.chars().count() <= 200)
         .ok_or("答案格式不合法")?;
-    let q=one(&i.db,"SELECT pq.*,ps.status session_status,(SELECT is_correct FROM answer_attempts a WHERE a.practice_question_id=pq.id ORDER BY a.created_at,a.rowid LIMIT 1) first_correct FROM practice_questions pq JOIN practice_sessions ps ON ps.id=pq.session_id WHERE pq.id=?1",&[&id])?.ok_or("这道题现在不能订正")?;
-    if q["session_status"] != "submitted" || q["first_correct"] != 0 {
-        return Err("这道题现在不能订正".into());
-    }
+    let q = revision::question_for_revision(i, id)?;
     let give_up = input["giveUp"] == true;
     let correct = !give_up
         && answers::check(
@@ -432,4 +460,46 @@ pub fn finish(i: &Inner, input: &Value) -> AppResult<Value> {
     let id = repo::required(input, "sessionId", 500)?;
     exec(&i.db,"UPDATE practice_sessions SET status='completed',completed_at=?1 WHERE id=?2 AND status IN ('submitted','pending')",&[&db::now(),&id])?;
     Ok(Value::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mastery::GuidedRecheck;
+
+    #[test]
+    fn gives_one_pending_recheck_priority_without_reordering_the_other_pairs() {
+        let pairs = (0..9)
+            .rev()
+            .map(|streak| Pair {
+                cause: "calculation_error".into(),
+                point: streak.to_string(),
+                streak,
+                mastered: streak == 8,
+                review_due: false,
+            })
+            .collect();
+        let rechecks = [
+            ("8", "2026-11-01", None),
+            ("5", "2026-11-02", Some(false)),
+            ("6", "2026-11-04", None),
+            ("7", "2026-11-03", None),
+        ]
+        .into_iter()
+        .map(|(point, since, correct)| {
+            (
+                ("calculation_error".into(), point.into()),
+                GuidedRecheck {
+                    since: since.into(),
+                    correct,
+                },
+            )
+        })
+        .collect();
+        let selected = select_pairs(pairs, &rechecks);
+        assert_eq!(
+            selected.iter().map(|pair| pair.streak).collect::<Vec<_>>(),
+            [7, 0, 1, 2, 3]
+        );
+    }
 }

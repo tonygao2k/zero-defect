@@ -8,4 +8,9 @@ export type HomeStats = {
   remainingKnowledgePoints: number;
   /** 现在能练习的“知识点 + 根因”数(未掌握的,或已掌握且该复习的)。为 0 时“开始练习”置灰。 */
   practiceablePairs: number;
+  guidedRecheck: {
+    pending: number;
+    completed: number;
+    correct: number;
+  };
 };

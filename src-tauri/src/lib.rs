@@ -6,6 +6,7 @@ mod figure;
 mod mastery;
 mod practice;
 mod repo;
+mod revision;
 mod state;
 
 use db::{exec, one, text, transaction, AppResult};
@@ -33,6 +34,7 @@ const WRAPPED: &[&str] = &[
     "deleteMistake",
     "startPractice",
     "submitPractice",
+    "requestPracticeHint",
     "revisePractice",
     "finishPractice",
 ];
@@ -144,6 +146,7 @@ fn dispatch(state: &AppState, method: &str, input: &Value) -> AppResult<Value> {
         "getTaxonomy" => repo::taxonomy(&i),
         "getHomeStats" => mastery::stats(&i),
         "submitPractice" => practice::submit(&i, input),
+        "requestPracticeHint" => revision::request_hint(&i, input),
         "revisePractice" => practice::revise(&i, input),
         "finishPractice" => practice::finish(&i, input),
         _ => Err("不支持的后台操作".into()),

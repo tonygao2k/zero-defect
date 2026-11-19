@@ -67,6 +67,7 @@ export const api: Api = {
     call('startPractice', (args as unknown[])[0]),
   submitPractice: (...args: Parameters<Api['submitPractice']>) =>
     call('submitPractice', (args as unknown[])[0]),
+  requestPracticeHint: (input) => call('requestPracticeHint', input),
   revisePractice: (...args: Parameters<Api['revisePractice']>) =>
     call('revisePractice', (args as unknown[])[0]),
   finishPractice: (...args: Parameters<Api['finishPractice']>) =>

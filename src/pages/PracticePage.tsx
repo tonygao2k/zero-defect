@@ -5,6 +5,7 @@ import { MarkdownView } from '../components/MarkdownView';
 import { Note, Page, Waiting, btn } from '../components/ui';
 import { APP_DISPLAY_NAME } from '../shared/app-info';
 import type {
+  PracticeHint,
   PracticeQuestion,
   PracticeResult,
   PracticeSession,
@@ -319,6 +320,21 @@ export function PracticePage() {
             ))}
           </section>
         )}
+        {stats &&
+          (stats.guidedRecheck.pending > 0 ||
+            stats.guidedRecheck.completed > 0) && (
+            <section className="rounded-3xl bg-white/5 p-5 ring-1 ring-inset ring-white/10">
+              <h2 className="font-semibold">订正后的独立复测</h2>
+              <p className="mt-2 text-sm leading-relaxed text-white/70">
+                {stats.guidedRecheck.pending} 项待复测；已复测{' '}
+                {stats.guidedRecheck.completed} 项，其中{' '}
+                {stats.guidedRecheck.correct} 项首次独立答对。
+              </p>
+              <p className="mt-1 text-sm text-white/60">
+                后续练习会优先安排一项待复测内容，用新题检验是否能自己做出来。
+              </p>
+            </section>
+          )}
       </div>
     </Page>
   );
@@ -420,27 +436,53 @@ function Revising(props: {
   const [index, setIndex] = useState(0);
   const [value, setValue] = useState('');
   const [feedback, setFeedback] = useState<ReviseResult | null>(null);
+  const [hint, setHint] = useState<PracticeHint | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const q = questions[index];
   const last = index === questions.length - 1;
   const settled = feedback?.correctAnswer != null;
 
-  const check = async (giveUp = false) => {
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
     setError('');
-    const res = await window.api.revisePractice({
-      questionId: q.id,
-      answer: value,
-      giveUp,
-    });
-    if (!res.ok) return setError(res.error);
-    setFeedback(res.value);
+    try {
+      await action();
+    } catch {
+      setError('暂时无法处理，请再试一次。');
+    } finally {
+      setBusy(false);
+    }
   };
+
+  const check = (giveUp = false) =>
+    run(async () => {
+      const res = await window.api.revisePractice({
+        questionId: q.id,
+        answer: value,
+        giveUp,
+      });
+      if (res.ok) setFeedback(res.value);
+      else setError(res.error);
+    });
+
+  const requestHint = () =>
+    run(async () => {
+      const res = await window.api.requestPracticeHint({
+        questionId: q.id,
+        step: hint ? 2 : 1,
+      });
+      if (res.ok) setHint(res.value);
+      else setError(res.error);
+    });
 
   const next = () => {
     if (last) return props.onDone();
     setIndex(index + 1);
     setValue('');
     setFeedback(null);
+    setHint(null);
+    setError('');
   };
 
   return (
@@ -458,6 +500,7 @@ function Revising(props: {
           <button
             type="button"
             className={`${btn.secondary} mr-auto`}
+            disabled={busy}
             onClick={props.onDone}
           >
             结束练习
@@ -468,18 +511,29 @@ function Revising(props: {
             </button>
           ) : (
             <>
+              {hint?.step !== 2 && (
+                <button
+                  type="button"
+                  className={btn.secondary}
+                  disabled={busy}
+                  onClick={() => void requestHint()}
+                >
+                  {hint ? '再给一点提示' : '给我一点提示'}
+                </button>
+              )}
               <button
                 type="button"
                 className={btn.secondary}
-                onClick={() => check(true)}
+                disabled={busy}
+                onClick={() => void check(true)}
               >
-                不会做
+                看解析
               </button>
               <button
                 type="button"
                 className={btn.primary}
-                disabled={!value.trim()}
-                onClick={() => check()}
+                disabled={busy || !value.trim()}
+                onClick={() => void check()}
               >
                 检查
               </button>
@@ -493,18 +547,39 @@ function Revising(props: {
           key={q.id}
           question={q}
           value={value}
-          disabled={settled}
+          disabled={settled || busy}
           onChange={(v) => {
             setValue(v);
             setFeedback(null);
           }}
         />
+        <div
+          role="status"
+          className={
+            hint && !settled ? 'rounded-2xl bg-white/10 p-4' : 'sr-only'
+          }
+        >
+          {hint && !settled && (
+            <>
+              <p className="text-sm font-semibold text-mint">
+                提示 {hint.step} / 2
+              </p>
+              <p className="mt-1 text-sm leading-relaxed text-white">
+                {hint.prompt}
+              </p>
+            </>
+          )}
+        </div>
         {feedback && !feedback.correct && !settled && (
           <Note tone="error">
-            还不对,再想想。实在不会可以点「不会做」看答案。
+            {hint?.step === 2
+              ? '还不对。可以再试一次，或看解析。'
+              : '还不对。可以再试一次，或用一个提示想想。'}
           </Note>
         )}
-        {feedback?.correct && <Note tone="ok">答对了!</Note>}
+        {feedback?.correct && (
+          <Note tone="ok">答对了！试着用自己的话说说：你刚才改了哪一步？</Note>
+        )}
         {settled && (
           <div className="rounded-2xl bg-white/10 p-4 text-white ring-1 ring-white/20">
             <p className="font-semibold">

@@ -8,6 +8,8 @@ use std::{
 };
 
 pub type AppResult<T> = Result<T, String>;
+const SCHEMA_VERSION: i64 = 6;
+
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -75,7 +77,7 @@ pub fn open(file: &Path) -> AppResult<Connection> {
     db.busy_timeout(Duration::from_secs(10)).map_err(err)?;
     db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;")
         .map_err(err)?;
-    migrate(&db, Some(file), 5)?;
+    migrate(&db, Some(file), SCHEMA_VERSION)?;
     Ok(db)
 }
 
@@ -88,7 +90,7 @@ pub fn migrate(db: &Connection, file: Option<&Path>, target: i64) -> AppResult<(
             |r| r.get(0),
         )
         .map_err(err)?;
-    if from > 5 {
+    if from > SCHEMA_VERSION {
         return Err("数据库来自更新版本,请升级应用后再打开".into());
     }
     if from > 0 && from < target {
@@ -147,6 +149,11 @@ pub fn migrate(db: &Connection, file: Option<&Path>, target: i64) -> AppResult<(
                 }
                 5 => db
                     .execute_batch("ALTER TABLE practice_questions ADD COLUMN figure_json TEXT")
+                    .map_err(err)?,
+                6 => db
+                    .execute_batch(
+                        "ALTER TABLE practice_questions ADD COLUMN revision_hint_at TEXT",
+                    )
                     .map_err(err)?,
                 _ => return Err("不支持的数据库版本".into()),
             }

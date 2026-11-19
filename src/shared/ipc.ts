@@ -10,6 +10,7 @@ import type {
 import type { PaperSummary } from './papers';
 import type {
   PracticeAnswerInput,
+  PracticeHint,
   PracticeResult,
   PracticeSession,
   ReviseResult,
@@ -47,6 +48,7 @@ export const IPC = {
   getHomeStats: 'home:stats',
   startPractice: 'practice:start',
   submitPractice: 'practice:submit',
+  requestPracticeHint: 'practice:hint',
   revisePractice: 'practice:revise',
   finishPractice: 'practice:finish',
 } as const;
@@ -159,6 +161,10 @@ export type Api = {
     answers: PracticeAnswerInput[];
     elapsedMs?: number;
   }): Promise<Result<PracticeResult>>;
+  requestPracticeHint(input: {
+    questionId: string;
+    step: PracticeHint['step'];
+  }): Promise<Result<PracticeHint>>;
   /** 订正本次答错的题。答对或放弃时才返回答案和解析。 */
   revisePractice(input: {
     questionId: string;

@@ -51,10 +51,10 @@ fn mock_draft(i: &state::Inner, pid: &str) -> String {
     .to_owned()
 }
 #[test]
-fn fresh_database_has_all_five_versions_and_taxonomy() {
+fn fresh_database_has_all_six_versions_and_taxonomy() {
     let (_d, s) = setup();
     let i = s.lock().unwrap();
-    assert_eq!(count(&i, "schema_migrations"), 5);
+    assert_eq!(count(&i, "schema_migrations"), 6);
     let t = repo::taxonomy(&i).unwrap();
     assert!(t["causes"]
         .as_array()
@@ -66,6 +66,19 @@ fn fresh_database_has_all_five_versions_and_taxonomy() {
         .unwrap()
         .is_empty());
     assert_eq!(mastery::stats(&i).unwrap()["mistakeCount"], 0);
+}
+#[test]
+fn upgrades_practice_questions_without_marking_old_revisions_as_guided() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    db::migrate(&db, None, 5).unwrap();
+    db.execute_batch("INSERT INTO practice_questions(id,root_cause_id,knowledge_point_id,question_markdown,answer_type,correct_answer,difficulty,created_at) VALUES ('old','carry_omission','mul_two_digit','23×14=?','number','322',1,'t')").unwrap();
+    db::migrate(&db, None, 6).unwrap();
+    let question = one(&db, "SELECT * FROM practice_questions WHERE id='old'", &[])
+        .unwrap()
+        .unwrap();
+    assert_eq!(question["correct_answer"], "322");
+    assert_eq!(question["revision_hint_at"], Value::Null);
 }
 #[test]
 fn upgrades_v2_with_relations_and_groups_legacy_images() {
@@ -240,6 +253,109 @@ fn confirm_practice_submit_revise_delete_preserves_history() {
     assert!(query(&i.db, "PRAGMA foreign_key_check", &[])
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn optional_guidance_rechecks_only_a_new_independent_first_answer() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    let paper = mock_paper(&i);
+    assert!(repo::confirm_recommended(&i, &mock_draft(&i, &paper)).unwrap());
+    let question = Question {
+        markdown: "12×13=?".into(),
+        kind: "number".into(),
+        options: vec![],
+        correct: "156".into(),
+        unit: String::new(),
+        solution: "12×13=156".into(),
+        figure: Value::Null,
+        solver: "156".into(),
+        pair: Pair {
+            cause: "carry_omission".into(),
+            point: "mul_two_digit".into(),
+            mastered: false,
+            streak: 0,
+            review_due: false,
+        },
+    };
+    let submit = |session: &Value, answer: &str| {
+        practice::submit(
+            &i,
+            &json!({"sessionId":session["sessionId"],"answers":[{"questionId":session["questions"][0]["id"],"answer":answer}]}),
+        )
+        .unwrap();
+    };
+    let finish = |session: &Value| {
+        practice::finish(&i, &json!({"sessionId":session["sessionId"]})).unwrap();
+    };
+    let original = practice::save(&i, std::slice::from_ref(&question)).unwrap();
+    let original_id = &original["questions"][0]["id"];
+    let request_hint =
+        |step| revision::request_hint(&i, &json!({"questionId":original_id,"step":step}));
+    assert!(request_hint(1).is_err());
+    submit(&original, "146");
+    assert!(request_hint(0).is_err());
+    assert!(request_hint(2).is_err());
+    let first = request_hint(1).unwrap();
+    let second = request_hint(2).unwrap();
+    assert_eq!(first["step"], 1);
+    assert_eq!(second["step"], 2);
+    assert!(first["prompt"].as_str().unwrap().contains("进位"));
+    assert_ne!(first["prompt"], second["prompt"]);
+    assert!(first.get("correctAnswer").is_none());
+    assert!(first.get("solutionMarkdown").is_none());
+    assert_eq!(request_hint(1).unwrap(), first);
+    assert_eq!(
+        practice::revise(&i, &json!({"questionId":original_id,"answer":"156"})).unwrap()["correct"],
+        true
+    );
+    assert_eq!(count(&i, "answer_attempts"), 1);
+    assert_eq!(mastery::pairs(&i).unwrap()[0].streak, 0);
+    assert_eq!(
+        mastery::stats(&i).unwrap()["guidedRecheck"],
+        json!({"pending":1,"completed":0,"correct":0})
+    );
+    finish(&original);
+    assert!(request_hint(1).is_err());
+
+    let repeat = practice::save(&i, std::slice::from_ref(&question)).unwrap();
+    submit(&repeat, "156");
+    assert!(revision::request_hint(
+        &i,
+        &json!({"questionId":repeat["questions"][0]["id"],"step":1})
+    )
+    .is_err());
+    finish(&repeat);
+
+    let variant = Question {
+        markdown: "13×14=?".into(),
+        correct: "182".into(),
+        ..question.clone()
+    };
+    let skipped = practice::save(&i, std::slice::from_ref(&variant)).unwrap();
+    submit(&skipped, "");
+    finish(&skipped);
+    assert_eq!(mastery::stats(&i).unwrap()["guidedRecheck"]["pending"], 1);
+
+    let independent = practice::save(&i, &[variant]).unwrap();
+    submit(&independent, "182");
+    finish(&independent);
+    assert_eq!(
+        mastery::stats(&i).unwrap()["guidedRecheck"],
+        json!({"pending":0,"completed":1,"correct":1})
+    );
+
+    let later = practice::save(
+        &i,
+        &[Question {
+            markdown: "14×15=?".into(),
+            correct: "210".into(),
+            ..question
+        }],
+    )
+    .unwrap();
+    submit(&later, "200");
+    assert_eq!(mastery::stats(&i).unwrap()["guidedRecheck"]["correct"], 1);
 }
 #[test]
 fn image_handles_normalize_and_expire() {
@@ -531,7 +647,11 @@ fn ai_http_recognition_and_practice_flow() {
                 .contains("base64")
         );
     }
-    let generated = json!({"questions":[{"question_markdown":"12+1=?","answer_type":"number","correct_answer":"13","solution_markdown":"12+1=13"}]});
+    let generated = json!({"questions":[
+        {"question_markdown":"23 × 14 = ?","answer_type":"number","correct_answer":"322"},
+        {"question_markdown":"12+1=?","answer_type":"number","correct_answer":"13","solution_markdown":"12+1=13"},
+        {"question_markdown":"12 + 1 = ?","answer_type":"number","correct_answer":"13"}
+    ]});
     let (endpoint, server) = mock_ai(vec![
         (200, reply(&generated.to_string())),
         (200, reply("{\"answer\":\"13\"}")),
@@ -605,6 +725,7 @@ fn malformed_native_inputs_fail_without_panicking() {
         "deletePaper",
         "confirmPaper",
         "submitPractice",
+        "requestPracticeHint",
         "revisePractice",
         "finishPractice",
     ] {

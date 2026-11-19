@@ -179,6 +179,11 @@ export type PracticeAnswerInput = {
   answer: string;
 };
 
+export type PracticeHint = {
+  step: 1 | 2;
+  prompt: string;
+};
+
 /**
  * 订正:答对或放弃时才公布正确答案和解析。
  * 订正不再计入掌握度:孩子已经知道自己错了,不能算作掌握的证据。
