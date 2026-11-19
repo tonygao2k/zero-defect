@@ -321,6 +321,10 @@ export function PracticePage({ active }: { active: boolean }) {
   }
 
   const canStart = (stats?.practiceablePairs ?? 0) > 0;
+  const recheck = stats?.guidedRecheck;
+  const showGuidedRecheck =
+    recheck && (recheck.pending > 0 || recheck.completed > 0);
+  const unsureRecheckPending = stats?.unsureRecheckPending ?? 0;
   return (
     <Page
       title="智能练习"
@@ -369,7 +373,7 @@ export function PracticePage({ active }: { active: boolean }) {
         {stats && (
           <section
             aria-label="学习概况"
-            className="grid grid-cols-2 gap-4 @min-[850px]:grid-cols-4"
+            className="grid auto-rows-fr grid-cols-2 gap-x-3 gap-y-5 @min-[640px]:grid-cols-4"
           >
             {[
               {
@@ -399,41 +403,47 @@ export function PracticePage({ active }: { active: boolean }) {
             ].map((item) => (
               <div
                 key={item.label}
-                className="rounded-3xl bg-white/5 p-5 ring-1 ring-inset ring-white/10"
+                className="rounded-3xl bg-white/5 px-4 py-3 ring-1 ring-inset ring-white/10"
               >
                 <p className="text-sm text-white/60">{item.label}</p>
-                <p className="mt-3 text-3xl font-semibold text-mint">
+                <p className="mt-1 text-3xl font-semibold text-mint">
                   {item.value}
                   <span className="ml-2 text-xs font-normal text-white/50">
                     {item.unit}
                   </span>
                 </p>
-                <p className="mt-2 text-xs text-white/45">{item.hint}</p>
+                <p className="mt-1 text-xs text-white/45">{item.hint}</p>
               </div>
             ))}
+            {(showGuidedRecheck || unsureRecheckPending > 0) && (
+              <section
+                aria-label="练习复测"
+                className="col-span-full flex flex-col justify-center gap-1 rounded-3xl bg-white/5 px-4 py-3 ring-1 ring-inset ring-white/10"
+              >
+                {showGuidedRecheck && (
+                  <>
+                    <div className="@min-[640px]:flex @min-[640px]:flex-wrap @min-[640px]:items-baseline @min-[640px]:gap-x-4">
+                      <h2 className="font-semibold">订正后的独立复测</h2>
+                      <p className="text-sm leading-relaxed text-white/70">
+                        {recheck.pending} 项待复测；已复测 {recheck.completed}{' '}
+                        项，其中 {recheck.correct} 项首次独立答对。
+                      </p>
+                    </div>
+                    <p className="text-sm text-white/60">
+                      后续练习会优先安排一项待复测内容，用新题检验是否能自己做出来。
+                    </p>
+                  </>
+                )}
+                {unsureRecheckPending > 0 && (
+                  <Note tone="info">
+                    有 {unsureRecheckPending}{' '}
+                    项标记过「不会」，后续会优先安排同类新题。
+                  </Note>
+                )}
+              </section>
+            )}
           </section>
         )}
-        {!!stats?.unsureRecheckPending && (
-          <Note tone="info">
-            有 {stats.unsureRecheckPending}{' '}
-            项标记过「不会」，后续会优先安排同类新题。
-          </Note>
-        )}
-        {stats &&
-          (stats.guidedRecheck.pending > 0 ||
-            stats.guidedRecheck.completed > 0) && (
-            <section className="rounded-3xl bg-white/5 p-5 ring-1 ring-inset ring-white/10">
-              <h2 className="font-semibold">订正后的独立复测</h2>
-              <p className="mt-2 text-sm leading-relaxed text-white/70">
-                {stats.guidedRecheck.pending} 项待复测；已复测{' '}
-                {stats.guidedRecheck.completed} 项，其中{' '}
-                {stats.guidedRecheck.correct} 项首次独立答对。
-              </p>
-              <p className="mt-1 text-sm text-white/60">
-                后续练习会优先安排一项待复测内容，用新题检验是否能自己做出来。
-              </p>
-            </section>
-          )}
       </div>
     </Page>
   );
