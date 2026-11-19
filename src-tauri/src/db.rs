@@ -1,3 +1,4 @@
+use crate::answers;
 use chrono::{DateTime, Local, Utc};
 use rusqlite::{params, types::ValueRef, Connection, ToSql};
 use serde_json::{json, Map, Value};
@@ -8,7 +9,7 @@ use std::{
 };
 
 pub type AppResult<T> = Result<T, String>;
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
@@ -155,6 +156,11 @@ pub fn migrate(db: &Connection, file: Option<&Path>, target: i64) -> AppResult<(
                         "ALTER TABLE practice_questions ADD COLUMN revision_hint_at TEXT",
                     )
                     .map_err(err)?,
+                7 => {
+                    db.execute_batch(include_str!("../assets/v7.sql"))
+                        .map_err(err)?;
+                    backfill_mistake_evidence(db)?;
+                }
                 _ => return Err("不支持的数据库版本".into()),
             }
             if !query(db, "PRAGMA foreign_key_check", &[])?.is_empty() {
@@ -171,6 +177,29 @@ pub fn migrate(db: &Connection, file: Option<&Path>, target: i64) -> AppResult<(
             db.execute_batch("PRAGMA foreign_keys=ON").map_err(err)?;
         }
         outcome?;
+    }
+    Ok(())
+}
+fn backfill_mistake_evidence(db: &Connection) -> AppResult<()> {
+    let rows = query(
+        db,
+        "SELECT id,student_answer,student_work_markdown,correct_answer FROM mistakes m
+         WHERE m.status='active' AND julianday(m.updated_at) IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM mistake_root_causes cause WHERE cause.mistake_id=m.id
+                           AND cause.is_primary=1 AND cause.root_cause_id='not_attempted')",
+        &[],
+    )?;
+    let mut update = db
+        .prepare("UPDATE mistakes SET confirmed_evidence_at=updated_at WHERE id=?1")
+        .map_err(err)?;
+    for row in rows {
+        if answers::is_mistake_evidence(
+            text(&row, "student_answer"),
+            text(&row, "student_work_markdown"),
+            text(&row, "correct_answer"),
+        ) {
+            update.execute([text(&row, "id")]).map_err(err)?;
+        }
     }
     Ok(())
 }

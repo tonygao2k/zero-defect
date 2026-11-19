@@ -18,10 +18,23 @@ export const EditableFieldsSchema = z.object({
 
 export const ConfirmMistakeSchema = EditableFieldsSchema.extend({
   rootCauseCode: z.string().min(1),
+  confirmComplete: z.boolean().optional(),
 });
 
 export type EditableFields = z.infer<typeof EditableFieldsSchema>;
 export type ConfirmMistakeInput = z.infer<typeof ConfirmMistakeSchema>;
+
+export const reviewReasonLabels = {
+  incomplete: '题目不完整',
+  image_quality: '清晰度需核对',
+  missing_fields: '缺少题干或标准答案',
+  unknown_point: '知识点不明确',
+  unknown_cause: '错因不明确',
+  low_confidence: '归因把握不足',
+  missing_evidence: '缺少作答过程或归因依据',
+} as const;
+
+export type MistakeReviewReason = keyof typeof reviewReasonLabels;
 
 export type MistakeSummary = {
   id: string;
@@ -36,6 +49,7 @@ export type MistakeSummary = {
   incomplete: boolean;
   /** 归因把握不高、缺少解题过程等,需要家长仔细核对。 */
   needsAttention: boolean;
+  reviewReasons: MistakeReviewReason[];
   createdAt: string;
 };
 
@@ -47,4 +61,8 @@ export const ListMistakesSchema = z
   .optional();
 export type ListMistakesInput = z.infer<typeof ListMistakesSchema>;
 
-export type BatchConfirmResult = { confirmed: number; skipped: number };
+export type BatchConfirmResult = {
+  confirmed: number;
+  skipped: number;
+  skippedReasons: Partial<Record<MistakeReviewReason, number>>;
+};

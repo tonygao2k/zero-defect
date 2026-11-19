@@ -67,9 +67,14 @@ export const api: Api = {
     call('startPractice', (args as unknown[])[0]),
   submitPractice: (...args: Parameters<Api['submitPractice']>) =>
     call('submitPractice', (args as unknown[])[0]),
+  getPracticeResult: (input) => call('getPracticeResult', input),
   requestPracticeHint: (input) => call('requestPracticeHint', input),
   revisePractice: (...args: Parameters<Api['revisePractice']>) =>
     call('revisePractice', (args as unknown[])[0]),
+  reportPracticeQuestion: (input) => call('reportPracticeQuestion', input),
+  listPracticeReviews: (...args: Parameters<Api['listPracticeReviews']>) =>
+    call('listPracticeReviews', (args as unknown[])[0]),
+  resolvePracticeReview: (input) => call('resolvePracticeReview', input),
   finishPractice: (...args: Parameters<Api['finishPractice']>) =>
     call('finishPractice', (args as unknown[])[0]),
 };

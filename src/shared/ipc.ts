@@ -3,6 +3,7 @@ import type {
   BatchConfirmResult,
   ConfirmMistakeInput,
   ListMistakesInput,
+  MistakeReviewReason,
   MistakeStatus,
   MistakeSummary,
   EditableFields,
@@ -11,7 +12,10 @@ import type { PaperSummary } from './papers';
 import type {
   PracticeAnswerInput,
   PracticeHint,
+  PracticeIssue,
   PracticeResult,
+  PracticeReview,
+  PracticeReviewDecision,
   PracticeSession,
   ReviseResult,
 } from './practice';
@@ -48,8 +52,12 @@ export const IPC = {
   getHomeStats: 'home:stats',
   startPractice: 'practice:start',
   submitPractice: 'practice:submit',
+  getPracticeResult: 'practice:result',
   requestPracticeHint: 'practice:hint',
   revisePractice: 'practice:revise',
+  reportPracticeQuestion: 'practice:reportQuestion',
+  listPracticeReviews: 'practice:listReviews',
+  resolvePracticeReview: 'practice:resolveReview',
   finishPractice: 'practice:finish',
 } as const;
 
@@ -92,6 +100,8 @@ export type MistakeDetail = {
   imageDataUrls: string[];
   fields: Omit<EditableFields, 'mistakeId'>;
   analysis: AnalysisResult | null;
+  reviewReasons: MistakeReviewReason[];
+  confirmedRootCauseCode: string | null;
 };
 
 export type Taxonomy = {
@@ -148,7 +158,7 @@ export type Api = {
    */
   confirmRecommended(input: {
     mistakeId: string;
-  }): Promise<Result<{ confirmed: boolean }>>;
+  }): Promise<Result<{ confirmed: boolean; reasons: MistakeReviewReason[] }>>;
   deleteMistake(input: { mistakeId: string }): Promise<Result<void>>;
   listMistakes(input?: ListMistakesInput): Promise<MistakeSummary[]>;
   getTaxonomy(): Promise<Taxonomy>;
@@ -156,6 +166,9 @@ export type Api = {
   getHomeStats(): Promise<HomeStats>;
   /** 开始(或接着做)一次智能练习。出题要等一会儿。 */
   startPractice(): Promise<Result<PracticeSession>>;
+  getPracticeResult(input: {
+    sessionId: string;
+  }): Promise<Result<PracticeResult>>;
   submitPractice(input: {
     sessionId: string;
     answers: PracticeAnswerInput[];
@@ -171,5 +184,15 @@ export type Api = {
     answer: string;
     giveUp?: boolean;
   }): Promise<Result<ReviseResult>>;
+  reportPracticeQuestion(input: {
+    questionId: string;
+    reason: PracticeIssue;
+  }): Promise<Result<void>>;
+  listPracticeReviews(): Promise<Result<PracticeReview[]>>;
+  resolvePracticeReview(input: {
+    questionId: string;
+    action: PracticeReviewDecision;
+    note: string;
+  }): Promise<Result<void>>;
   finishPractice(input: { sessionId: string }): Promise<Result<void>>;
 };

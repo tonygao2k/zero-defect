@@ -37,6 +37,11 @@ pub fn same(student: &str, correct: &str) -> bool {
     let s = normalize(student);
     !s.is_empty() && s == normalize(correct)
 }
+pub fn is_mistake_evidence(student: &str, work: &str, correct: &str) -> bool {
+    !correct.trim().is_empty()
+        && (!student.trim().is_empty() || !work.trim().is_empty())
+        && !same(student, correct)
+}
 pub fn check(kind: &str, submitted: &str, correct: &str, unit: &str) -> bool {
     let s = normalize(submitted);
     let c = normalize(correct);

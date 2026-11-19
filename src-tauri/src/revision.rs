@@ -8,12 +8,10 @@ use serde_json::{json, Value};
 pub fn question_for_revision(i: &Inner, id: &str) -> AppResult<Value> {
     one(
         &i.db,
-        "SELECT q.* FROM practice_questions q
+        "SELECT q.* FROM valid_practice_questions q
          JOIN practice_sessions s ON s.id=q.session_id
-         WHERE q.id=?1 AND s.status='submitted' AND (
-             SELECT a.is_correct FROM answer_attempts a WHERE a.practice_question_id=q.id
-             ORDER BY a.created_at,a.rowid LIMIT 1
-         )=0",
+         LEFT JOIN practice_first_answers a ON a.practice_question_id=q.id
+         WHERE q.id=?1 AND s.status='submitted' AND COALESCE(a.outcome,'skipped') IN ('wrong','unsure','skipped')",
         &[&id],
     )?
     .ok_or_else(|| "这道题现在不能订正".into())

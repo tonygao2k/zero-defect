@@ -130,7 +130,7 @@ fn text_or_empty(v: &Value) -> &str {
 fn session(i: &Inner, id: &str) -> AppResult<Value> {
     let rows = query(
         &i.db,
-        "SELECT * FROM practice_questions WHERE session_id=?1 ORDER BY position",
+        "SELECT * FROM valid_practice_questions WHERE session_id=?1 ORDER BY position",
         &[&id],
     )?;
     Ok(
@@ -139,15 +139,12 @@ fn session(i: &Inner, id: &str) -> AppResult<Value> {
 }
 
 fn select_pairs(mut pairs: Vec<Pair>, rechecks: &GuidedRechecks) -> Vec<Pair> {
-    pairs.retain(|pair| !pair.mastered || pair.review_due);
-    pairs.sort_by_key(|pair| (pair.mastered, pair.streak));
+    pairs.retain(|pair| pair.practiceable(rechecks));
+    pairs.sort_by_key(|pair| (!pair.unsure_due, pair.mastered, pair.streak));
     if let Some((index, _)) = pairs
         .iter()
         .enumerate()
-        .filter_map(|(index, pair)| {
-            let recheck = rechecks.get(&(pair.cause.clone(), pair.point.clone()))?;
-            recheck.correct.is_none().then_some((index, &recheck.since))
-        })
+        .filter_map(|(index, pair)| pair.pending_guidance(rechecks).map(|since| (index, since)))
         .min_by_key(|(_, since)| *since)
     {
         pairs[..=index].rotate_right(1);
@@ -162,6 +159,7 @@ pub async fn start(state: &AppState) -> AppResult<Value> {
     let (key, settings, candidates) = {
         let i = state.lock()?;
         exec(&i.db,"UPDATE practice_sessions SET status='completed',completed_at=?1 WHERE status='submitted'",&[&db::now()])?;
+        exec(&i.db,"UPDATE practice_sessions SET status='completed',completed_at=?1 WHERE status='pending' AND NOT EXISTS (SELECT 1 FROM valid_practice_questions q WHERE q.session_id=practice_sessions.id)",&[&db::now()])?;
         if let Some(p)=one(&i.db,"SELECT id FROM practice_sessions WHERE status='pending' ORDER BY created_at DESC LIMIT 1",&[])?{return session(&i,text(&p,"id"));}
         let key = i.require_key()?;
         let pairs = select_pairs(mastery::pairs(&i)?, &mastery::guided_rechecks(&i)?);
@@ -208,8 +206,19 @@ pub async fn start(state: &AppState) -> AppResult<Value> {
         return Err(first_error.unwrap_or_else(|| "没能生成合格的练习题,请稍后重试".into()));
     }
     let i = state.lock()?;
+    let excluded = voided_question_keys(&i)?;
+    questions.retain(|q| !excluded.contains(&question_key(&q.markdown, &q.figure)));
+    if questions.is_empty() {
+        return Err("生成的题目已作废，请重新开始练习".into());
+    }
     save(&i, &questions)
 }
+
+fn voided_question_keys(i: &Inner) -> AppResult<HashSet<(String, String)>> {
+    Ok(query(&i.db,"SELECT q.question_markdown q,q.figure_json FROM practice_questions q JOIN practice_question_review_state r ON r.question_id=q.id AND r.action='void'",&[])?
+        .iter().map(|row| question_key(text(row, "q"), &parsed(row, "figure_json"))).collect())
+}
+
 async fn make_questions(
     state: &AppState,
     pair: &Pair,
@@ -218,12 +227,13 @@ async fn make_questions(
     grade: i64,
     difficulty: &PracticeDifficulty,
 ) -> AppResult<Vec<Question>> {
-    let (info, examples, avoid) = {
+    let (info, examples, avoid, voided) = {
         let i = state.lock()?;
         let info=one(&i.db,"SELECT kp.label kp,rc.label cause,COALESCE(rc.description,'') description FROM knowledge_points kp,root_causes rc WHERE kp.id=?1 AND rc.id=?2",&[&pair.point,&pair.cause])?.ok_or("知识点或归因不存在")?;
         let examples=query(&i.db,"SELECT m.question_markdown question,COALESCE(m.student_answer,'') studentAnswer,m.analysis_json aj FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id=m.id AND mrc.is_primary=1 WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2 ORDER BY m.updated_at DESC LIMIT 2",&[&pair.cause,&pair.point])?;
         let avoid=query(&i.db,"SELECT question_markdown q,figure_json FROM practice_questions WHERE root_cause_id=?1 AND knowledge_point_id=?2 ORDER BY created_at DESC LIMIT 10",&[&pair.cause,&pair.point])?;
-        (info, examples, avoid)
+        let voided = voided_question_keys(&i)?;
+        (info, examples, avoid, voided)
     };
     let seen = examples
         .iter()
@@ -233,6 +243,7 @@ async fn make_questions(
                 .iter()
                 .map(|prior| question_key(text(prior, "q"), &parsed(prior, "figure_json"))),
         )
+        .chain(voided)
         .collect::<HashSet<_>>();
     let examples = examples
         .iter()
@@ -375,8 +386,15 @@ pub fn submit(i: &Inner, input: &Value) -> AppResult<Value> {
         .ok_or("作答格式不合法")?;
     for a in answers {
         repo::required(a, "questionId", 500)?;
-        if a["answer"].as_str().is_none_or(|a| a.chars().count() > 200) {
-            return Err("答案过长或格式不合法".into());
+        let answer = a["answer"]
+            .as_str()
+            .filter(|answer| answer.chars().count() <= 200)
+            .ok_or("答案过长或格式不合法")?;
+        if !a["disposition"].is_null()
+            && (!matches!(a["disposition"].as_str(), Some("unsure" | "skipped"))
+                || !answer.trim().is_empty())
+        {
+            return Err("作答状态不合法".into());
         }
     }
     let elapsed = if input["elapsedMs"].is_null() {
@@ -391,36 +409,31 @@ pub fn submit(i: &Inner, input: &Value) -> AppResult<Value> {
     };
     let rows = query(
         &i.db,
-        "SELECT * FROM practice_questions WHERE session_id=?1 ORDER BY position",
+        "SELECT * FROM valid_practice_questions WHERE session_id=?1 ORDER BY position",
         &[&id],
     )?;
     let per_question = elapsed
         .filter(|n| *n > 0)
         .map(|n| (n as f64 / (rows.len().max(1) as f64)).round() as i64);
-    let mut wrong = Vec::new();
-    let mut correct = 0;
     transaction(&i.db, || {
         for q in &rows {
-            let given = answers
-                .iter()
-                .rev()
-                .find(|a| a["questionId"] == q["id"])
-                .map(|a| text(a, "answer").trim())
-                .unwrap_or("");
-            let skipped = given.is_empty();
-            let right = !skipped
-                && answers::check(
-                    text(q, "answer_type"),
-                    given,
-                    text(q, "correct_answer"),
-                    text(q, "answer_unit"),
-                );
-            if right {
-                correct += 1;
+            let input_answer = answers.iter().rev().find(|a| a["questionId"] == q["id"]);
+            let given = input_answer.map_or("", |a| text(a, "answer").trim());
+            let outcome = if input_answer.is_some_and(|a| a["disposition"] == "unsure") {
+                "unsure"
+            } else if given.is_empty() {
+                "skipped"
+            } else if answers::check(
+                text(q, "answer_type"),
+                given,
+                text(q, "correct_answer"),
+                text(q, "answer_unit"),
+            ) {
+                "correct"
             } else {
-                wrong.push(q["id"].clone());
-            }
-            exec(&i.db,"INSERT INTO answer_attempts(id,practice_question_id,root_cause_id,knowledge_point_id,submitted_answer,normalized_answer,is_correct,skipped,answer_time_ms,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",&[&db::id(),&text(q,"id"),&text(q,"root_cause_id"),&text(q,"knowledge_point_id"),&given,&given.to_lowercase(),&right,&skipped,&per_question,&db::now()])?;
+                "wrong"
+            };
+            exec(&i.db,"INSERT INTO answer_attempts(id,practice_question_id,root_cause_id,knowledge_point_id,submitted_answer,normalized_answer,is_correct,skipped,answer_time_ms,created_at,outcome) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",&[&db::id(),&text(q,"id"),&text(q,"root_cause_id"),&text(q,"knowledge_point_id"),&given,&given.to_lowercase(),&(outcome=="correct"),&(outcome=="skipped"),&per_question,&db::now(),&outcome])?;
             exec(
                 &i.db,
                 "UPDATE practice_questions SET status='answered' WHERE id=?1",
@@ -434,7 +447,48 @@ pub fn submit(i: &Inner, input: &Value) -> AppResult<Value> {
         )?;
         Ok(())
     })?;
-    Ok(json!({"correctCount":correct,"wrongCount":wrong.len(),"wrongQuestionIds":wrong}))
+    result(i, id)
+}
+
+pub fn result(i: &Inner, id: &str) -> AppResult<Value> {
+    if one(
+        &i.db,
+        "SELECT 1 FROM practice_sessions WHERE id=?1 AND status<>'pending'",
+        &[&id],
+    )?
+    .is_none()
+    {
+        return Err("找不到已提交的练习".into());
+    }
+    let rows = query(&i.db,
+        "SELECT q.id,q.position,CASE WHEN v.id IS NOT NULL AND a.outcome IS NULL
+                       THEN 'skipped' ELSE a.outcome END outcome,v.id IS NULL invalid,r.reason FROM practice_questions q
+         LEFT JOIN valid_practice_questions v ON v.id=q.id
+         LEFT JOIN practice_first_answers a ON a.practice_question_id=q.id
+         LEFT JOIN practice_question_review_state r ON r.question_id=q.id AND r.action='void'
+         WHERE q.session_id=?1 ORDER BY q.position", &[&id])?;
+    let ids = |outcome: &str| {
+        rows.iter()
+            .filter(|row| row["outcome"] == outcome)
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>()
+    };
+    let correct = ids("correct");
+    let wrong = ids("wrong");
+    let unsure = ids("unsure");
+    let skipped = ids("skipped");
+    let invalid = rows
+        .iter()
+        .filter(|row| row["invalid"] == 1)
+        .map(
+            |row| json!({"questionId":row["id"],"position":row["position"],"reason":row["reason"]}),
+        )
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "correctCount":correct.len(), "wrongCount":wrong.len(), "unsureCount":unsure.len(),
+        "skippedCount":skipped.len(),"unknownCount":ids("unknown").len(),"invalidCount":invalid.len(),"invalidQuestions":invalid,
+        "wrongQuestionIds":wrong, "unsureQuestionIds":unsure, "skippedQuestionIds":skipped
+    }))
 }
 pub fn revise(i: &Inner, input: &Value) -> AppResult<Value> {
     let id = repo::required(input, "questionId", 500)?;
@@ -477,10 +531,11 @@ mod tests {
                 streak,
                 mastered: streak == 8,
                 review_due: false,
+                unsure_due: false,
             })
             .collect();
         let rechecks = [
-            ("8", "2026-11-01", None),
+            ("8", "2026-11-01", Some(true)),
             ("5", "2026-11-02", Some(false)),
             ("6", "2026-11-04", None),
             ("7", "2026-11-03", None),

@@ -1,9 +1,10 @@
 use crate::{
+    answers,
     db::{self, exec, one, parsed, query, text, transaction, AppResult},
     state::{data_url, Inner},
 };
 use serde_json::{json, Value};
-use std::fs;
+use std::{collections::BTreeMap, fs};
 
 pub fn causes(i: &Inner) -> AppResult<Vec<Value>> {
     query(&i.db,"SELECT code,label,COALESCE(description,'') description FROM root_causes WHERE active=1 ORDER BY code",&[])
@@ -105,22 +106,31 @@ pub fn mistakes(i: &Inner, input: &Value) -> AppResult<Value> {
     }
     let pid = text(input, "paperId");
     let rows=query(&i.db,"SELECT m.id,m.status,m.paper_id paperId,m.question_markdown questionMarkdown,m.incomplete,m.analysis_json aj,m.created_at createdAt,kp.label knowledgePointLabel,(SELECT rc.label FROM mistake_root_causes mrc JOIN root_causes rc ON rc.id=mrc.root_cause_id WHERE mrc.mistake_id=m.id AND mrc.is_primary=1) primaryRootCauseLabel FROM mistakes m LEFT JOIN knowledge_points kp ON kp.id=m.knowledge_point_id WHERE (?1='' OR (?1='pending' AND m.status IN ('draft','unattributed')) OR (?1='confirmed' AND m.status='active')) AND (?2='' OR m.paper_id=?2) ORDER BY m.created_at,m.rowid",&[&status,&pid])?;
-    Ok(json!(rows
-        .into_iter()
-        .map(|mut r| {
-            let a = parsed(&r, "aj");
-            r["label"] = json!(text(&a, "label").trim());
-            r["needsAttention"] = json!(
-                r["status"] != "active" && a["warnings"].as_array().is_some_and(|w| !w.is_empty())
-            );
-            r["incomplete"] = json!(r["incomplete"] == 1);
-            r.as_object_mut().unwrap().remove("aj");
-            r
-        })
-        .collect::<Vec<_>>()))
+    let mut summaries = Vec::new();
+    for mut row in rows {
+        let analysis = parsed(&row, "aj");
+        let reasons = if row["status"] == "active" {
+            vec![]
+        } else {
+            quick_review_reasons(i, &row, &analysis)?
+        };
+        row["label"] = json!(text(&analysis, "label").trim());
+        row["needsAttention"] = json!(!reasons.is_empty());
+        row["reviewReasons"] = json!(reasons);
+        row["incomplete"] = json!(row["incomplete"] == 1);
+        row.as_object_mut().unwrap().remove("aj");
+        summaries.push(row);
+    }
+    Ok(json!(summaries))
 }
 pub fn detail(i: &Inner, id: &str) -> AppResult<Value> {
-    let r=one(&i.db,"SELECT m.*,p.title paperTitle,kp.code kpCode FROM mistakes m LEFT JOIN papers p ON p.id=m.paper_id LEFT JOIN knowledge_points kp ON kp.id=m.knowledge_point_id WHERE m.id=?1",&[&id])?.ok_or("找不到这道错题")?;
+    let r=one(&i.db,"SELECT m.*,p.title paperTitle,kp.code kpCode,(SELECT rc.code FROM mistake_root_causes mrc JOIN root_causes rc ON rc.id=mrc.root_cause_id WHERE mrc.mistake_id=m.id AND mrc.is_primary=1) confirmedCause FROM mistakes m LEFT JOIN papers p ON p.id=m.paper_id LEFT JOIN knowledge_points kp ON kp.id=m.knowledge_point_id WHERE m.id=?1",&[&id])?.ok_or("找不到这道错题")?;
+    let analysis = parsed(&r, "analysis_json");
+    let reasons = if r["status"] == "active" {
+        vec![]
+    } else {
+        quick_review_reasons(i, &r, &analysis)?
+    };
     let paths=query(&i.db,"SELECT pg.image_path FROM mistake_pages mp JOIN paper_pages pg ON pg.id=mp.page_id WHERE mp.mistake_id=?1 ORDER BY pg.position",&[&id])?;
     let mut urls = Vec::new();
     for p in paths {
@@ -130,7 +140,7 @@ pub fn detail(i: &Inner, id: &str) -> AppResult<Value> {
         }
     }
     Ok(
-        json!({"id":id,"status":r["status"],"paperId":r["paper_id"],"paperTitle":r["paperTitle"],"incomplete":r["incomplete"]==1,"imageDataUrls":urls,"analysis":parsed(&r,"analysis_json"),"fields":{"questionMarkdown":text(&r,"question_markdown"),"studentAnswer":text(&r,"student_answer"),"studentWorkMarkdown":text(&r,"student_work_markdown"),"correctAnswer":text(&r,"correct_answer"),"knowledgePointCode":r["kpCode"].as_str().unwrap_or("other")}}),
+        json!({"id":id,"status":r["status"],"paperId":r["paper_id"],"paperTitle":r["paperTitle"],"incomplete":r["incomplete"]==1,"imageDataUrls":urls,"analysis":analysis,"reviewReasons":reasons,"confirmedRootCauseCode":r["confirmedCause"],"fields":{"questionMarkdown":text(&r,"question_markdown"),"studentAnswer":text(&r,"student_answer"),"studentWorkMarkdown":text(&r,"student_work_markdown"),"correctAnswer":text(&r,"correct_answer"),"knowledgePointCode":r["kpCode"].as_str().unwrap_or("other")}}),
     )
 }
 pub fn required<'a>(v: &'a Value, key: &str, max: usize) -> AppResult<&'a str> {
@@ -148,9 +158,27 @@ pub fn confirm(i: &Inner, input: &Value) -> AppResult<Value> {
     let q = required(input, "questionMarkdown", 100000)?.trim();
     let kp = required(input, "knowledgePointCode", 500)?;
     let cause = required(input, "rootCauseCode", 500)?;
-    if one(&i.db, "SELECT id FROM mistakes WHERE id=?1", &[&id])?.is_none() {
-        return Err("找不到这道错题".into());
+    let correct = required(input, "correctAnswer", 10000)?.trim();
+    let student = text(input, "studentAnswer").trim();
+    let work = text(input, "studentWorkMarkdown").trim();
+    let row = one(
+        &i.db,
+        "SELECT incomplete,confirmed_evidence_at FROM mistakes WHERE id=?1",
+        &[&id],
+    )?
+    .ok_or("找不到这道错题")?;
+    if row["incomplete"] == 1 && input["confirmComplete"] != true {
+        return Err("请核对并补齐题目，再确认题目完整".into());
     }
+    if kp == "other" {
+        return Err("请先选择一个明确的知识点".into());
+    }
+    if cause == "not_attempted" && (!student.is_empty() || !work.is_empty()) {
+        return Err("这道题已有作答，请核对后选择其他错因".into());
+    }
+    let now = db::now();
+    let evidence_at = answers::is_mistake_evidence(student, work, correct)
+        .then(|| row["confirmed_evidence_at"].as_str().unwrap_or(&now));
     let cause = one(
         &i.db,
         "SELECT id FROM root_causes WHERE code=?1 AND active=1",
@@ -164,7 +192,7 @@ pub fn confirm(i: &Inner, input: &Value) -> AppResult<Value> {
     )?
     .ok_or("知识点不存在,请重新选择")?;
     transaction(&i.db, || {
-        exec(&i.db,"UPDATE mistakes SET question_markdown=?1,student_answer=?2,student_work_markdown=?3,correct_answer=?4,knowledge_point_id=?5,status='active',updated_at=?6 WHERE id=?7",&[&q,&text(input,"studentAnswer").trim(),&text(input,"studentWorkMarkdown").trim(),&text(input,"correctAnswer").trim(),&text(&kp,"id"),&db::now(),&id])?;
+        exec(&i.db,"UPDATE mistakes SET question_markdown=?1,student_answer=?2,student_work_markdown=?3,correct_answer=?4,knowledge_point_id=?5,status='active',updated_at=?6,confirmed_evidence_at=?7,incomplete=0 WHERE id=?8",&[&q,&student,&work,&correct,&text(&kp,"id"),&now,&evidence_at,&id])?;
         exec(
             &i.db,
             "UPDATE mistake_root_causes SET is_primary=0 WHERE mistake_id=?1",
@@ -174,24 +202,106 @@ pub fn confirm(i: &Inner, input: &Value) -> AppResult<Value> {
         Ok(Value::Null)
     })
 }
-pub fn confirm_recommended(i: &Inner, id: &str) -> AppResult<bool> {
+fn quick_review_reasons(i: &Inner, row: &Value, analysis: &Value) -> AppResult<Vec<&'static str>> {
+    let mut reasons = Vec::new();
+    if row["incomplete"] == 1 {
+        reasons.push("incomplete");
+    }
+    // Drafts saved before v1.0.4 carry no `imageQuality`; their only blur signal is the warning text.
+    let legacy = analysis.get("imageQuality").is_none();
+    let blurry = if !legacy {
+        text(analysis, "imageQuality") != "ok"
+    } else {
+        analysis["warnings"].as_array().is_some_and(|w| {
+            w.iter()
+                .any(|w| w.as_str().is_some_and(|w| w.contains("模糊")))
+        })
+    };
+    if blurry {
+        reasons.push("image_quality");
+    }
+    if ["questionMarkdown", "correctAnswer"]
+        .iter()
+        .any(|field| text(analysis, field).trim().is_empty())
+    {
+        reasons.push("missing_fields");
+    }
+    let point = text(analysis, "knowledgePointCode");
+    if point == "other"
+        || one(
+            &i.db,
+            "SELECT 1 FROM knowledge_points WHERE code=?1 AND active=1",
+            &[&point],
+        )?
+        .is_none()
+    {
+        reasons.push("unknown_point");
+    }
+    let cause = text(analysis, "recommendedRootCause");
+    let candidate = analysis["rootCauses"].as_array().and_then(|candidates| {
+        candidates.iter().find(|candidate| {
+            text(candidate, "code") == cause && candidate["unknownFromModel"] != true
+        })
+    });
+    let blank = text(analysis, "studentAnswer").trim().is_empty()
+        && text(analysis, "studentWorkMarkdown").trim().is_empty();
+    if candidate.is_none()
+        || (cause == "not_attempted") != blank
+        || one(
+            &i.db,
+            "SELECT 1 FROM root_causes WHERE code=?1 AND active=1",
+            &[&cause],
+        )?
+        .is_none()
+    {
+        reasons.push("unknown_cause");
+    } else if let Some(candidate) = candidate {
+        let score = candidate["confidence"].as_f64();
+        let known = match candidate.get("confidenceKnown") {
+            Some(known) => known == true,
+            None => {
+                legacy
+                    && score.is_some_and(|score| {
+                        (0.0 < score && score < 1.0)
+                            || (blank && cause == "not_attempted" && score == 1.0)
+                    })
+            }
+        };
+        if !known
+            || !score.is_some_and(|score| (i.settings.confidence_threshold..=1.0).contains(&score))
+        {
+            reasons.push("low_confidence");
+        }
+    }
+    if candidate.is_some_and(|item| text(item, "evidence").trim().is_empty())
+        || (!blank
+            && (analysis["hasStudentWork"] != true
+                || text(analysis, "studentWorkMarkdown").trim().is_empty()))
+    {
+        reasons.push("missing_evidence");
+    }
+    Ok(reasons)
+}
+
+pub fn confirm_recommended(i: &Inner, id: &str) -> AppResult<Value> {
     let r = one(
         &i.db,
-        "SELECT analysis_json,incomplete FROM mistakes WHERE id=?1",
+        "SELECT analysis_json,incomplete,status FROM mistakes WHERE id=?1",
         &[&id],
     )?
     .ok_or("找不到这道错题")?;
     let mut a = parsed(&r, "analysis_json");
-    if a.is_null()
-        || r["incomplete"] == 1
-        || text(&a, "recommendedRootCause").is_empty()
-        || text(&a, "knowledgePointCode") == "other"
-    {
-        return Ok(false);
+    if r["status"] == "active" {
+        return Ok(json!({"confirmed":true,"reasons":[]}));
+    }
+    let reasons = quick_review_reasons(i, &r, &a)?;
+    if !reasons.is_empty() {
+        return Ok(json!({"confirmed":false,"reasons":reasons}));
     }
     a["mistakeId"] = json!(id);
     a["rootCauseCode"] = a["recommendedRootCause"].clone();
-    Ok(confirm(i, &a).is_ok())
+    confirm(i, &a)?;
+    Ok(json!({"confirmed":true,"reasons":[]}))
 }
 pub fn confirm_paper(i: &Inner, id: &str) -> AppResult<Value> {
     paper(i, id)?;
@@ -202,12 +312,18 @@ pub fn confirm_paper(i: &Inner, id: &str) -> AppResult<Value> {
     )?;
     let total = ids.len();
     let mut confirmed = 0;
+    let mut skipped_reasons = BTreeMap::<String, usize>::new();
     for r in ids {
-        if confirm_recommended(i, text(&r, "id"))? {
+        let decision = confirm_recommended(i, text(&r, "id"))?;
+        if decision["confirmed"] == true {
             confirmed += 1;
+        } else if let Some(reasons) = decision["reasons"].as_array() {
+            for reason in reasons.iter().filter_map(Value::as_str) {
+                *skipped_reasons.entry(reason.to_owned()).or_default() += 1;
+            }
         }
     }
-    Ok(json!({"confirmed":confirmed,"skipped":total-confirmed}))
+    Ok(json!({"confirmed":confirmed,"skipped":total-confirmed,"skippedReasons":skipped_reasons}))
 }
 pub fn create_drafts(
     i: &Inner,

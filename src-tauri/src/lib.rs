@@ -5,6 +5,7 @@ mod db;
 mod figure;
 mod mastery;
 mod practice;
+mod question_review;
 mod repo;
 mod revision;
 mod state;
@@ -34,8 +35,12 @@ const WRAPPED: &[&str] = &[
     "deleteMistake",
     "startPractice",
     "submitPractice",
+    "getPracticeResult",
     "requestPracticeHint",
     "revisePractice",
+    "reportPracticeQuestion",
+    "listPracticeReviews",
+    "resolvePracticeReview",
     "finishPractice",
 ];
 
@@ -135,9 +140,9 @@ fn dispatch(state: &AppState, method: &str, input: &Value) -> AppResult<Value> {
         "confirmPaper" => repo::confirm_paper(&i, repo::required(input, "paperId", 500)?),
         "getMistake" => repo::detail(&i, repo::required(input, "mistakeId", 500)?),
         "confirmMistake" => repo::confirm(&i, input),
-        "confirmRecommended" => Ok(
-            json!({"confirmed":repo::confirm_recommended(&i,repo::required(input,"mistakeId",500)?)?}),
-        ),
+        "confirmRecommended" => {
+            repo::confirm_recommended(&i, repo::required(input, "mistakeId", 500)?)
+        }
         "deleteMistake" => {
             repo::remove_mistake(&i, repo::required(input, "mistakeId", 500)?)?;
             Ok(Value::Null)
@@ -146,8 +151,12 @@ fn dispatch(state: &AppState, method: &str, input: &Value) -> AppResult<Value> {
         "getTaxonomy" => repo::taxonomy(&i),
         "getHomeStats" => mastery::stats(&i),
         "submitPractice" => practice::submit(&i, input),
+        "getPracticeResult" => practice::result(&i, repo::required(input, "sessionId", 500)?),
         "requestPracticeHint" => revision::request_hint(&i, input),
         "revisePractice" => practice::revise(&i, input),
+        "reportPracticeQuestion" => question_review::report(&i, input),
+        "listPracticeReviews" => question_review::list(&i),
+        "resolvePracticeReview" => question_review::resolve(&i, input),
         "finishPractice" => practice::finish(&i, input),
         _ => Err("不支持的后台操作".into()),
     }

@@ -169,14 +169,49 @@ export type PracticeSession = {
 export type PracticeResult = {
   correctCount: number;
   wrongCount: number;
-  /** 本次答错或没做的题,“修改错题”只重做这些。 */
+  unsureCount: number;
+  skippedCount: number;
+  unknownCount: number;
+  invalidCount: number;
+  invalidQuestions: {
+    questionId: string;
+    position: number;
+    reason: string | null;
+  }[];
   wrongQuestionIds: string[];
+  unsureQuestionIds: string[];
+  skippedQuestionIds: string[];
 };
+
+export type PracticeDisposition = 'unsure' | 'skipped';
 
 export type PracticeAnswerInput = {
   questionId: string;
   /** 选择题是字母,计算题是孩子输入的结果;没作答传空字符串。 */
   answer: string;
+  disposition?: PracticeDisposition;
+};
+
+export const practiceIssueLabels = {
+  prompt: '题干或配图不清',
+  grading: '答案或判分不对',
+  explanation: '解析有误',
+  other: '其他',
+} as const;
+
+export type PracticeIssue = keyof typeof practiceIssueLabels;
+export type PracticeReviewDecision = 'keep' | 'void' | 'restore';
+export type PracticeReview = Omit<PracticeQuestion, 'id' | 'position'> & {
+  questionId: string;
+  status: 'report' | PracticeReviewDecision;
+  reason: PracticeIssue;
+  correctAnswer: string | null;
+  solutionMarkdown: string | null;
+  submittedAnswer: string | null;
+  outcome: 'correct' | 'wrong' | 'unsure' | 'skipped' | 'unknown' | null;
+  decisionNote: string | null;
+  reportedAt: string;
+  updatedAt: string;
 };
 
 export type PracticeHint = {

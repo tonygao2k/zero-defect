@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { MistakeDetail, Taxonomy } from '../shared/ipc';
-import type { EditableFields } from '../shared/mistakes';
+import { reviewReasonLabels, type EditableFields } from '../shared/mistakes';
 import { RotateLeftIcon, RotateRightIcon } from './Icons';
 import { ScrollArea, btn } from './ui';
 
@@ -92,6 +92,7 @@ export function ConfirmMistake(props: {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [imageIndex, setImageIndex] = useState(0);
+  const [completeChecked, setCompleteChecked] = useState(false);
 
   useEffect(() => {
     void Promise.all([
@@ -101,7 +102,12 @@ export function ConfirmMistake(props: {
       if (!d.ok) return setError(d.error);
       setDetail(d.value);
       setFields(d.value.fields);
-      setCauseCode(d.value.analysis?.recommendedRootCause ?? '');
+      setCauseCode(
+        d.value.confirmedRootCauseCode ??
+          (d.value.reviewReasons.length
+            ? ''
+            : (d.value.analysis?.recommendedRootCause ?? '')),
+      );
       setTaxonomy(t);
     });
   }, [mistakeId]);
@@ -112,7 +118,14 @@ export function ConfirmMistake(props: {
 
   const set = (patch: Partial<Fields>) => setFields({ ...fields, ...patch });
   const candidates = new Map(
-    (detail.analysis?.rootCauses ?? []).map((c) => [c.code, c]),
+    (detail.analysis?.rootCauses ?? [])
+      .filter(
+        (candidate) =>
+          candidate.code === 'not_attempted' ||
+          (detail.analysis?.hasStudentWork &&
+            detail.analysis.studentWorkMarkdown.trim()),
+      )
+      .map((candidate) => [candidate.code, candidate]),
   );
   const payload = { mistakeId, ...fields };
 
@@ -129,11 +142,12 @@ export function ConfirmMistake(props: {
   };
 
   const warnings = [
+    ...detail.reviewReasons.map((reason) => reviewReasonLabels[reason]),
     ...(detail.incomplete
       ? ['这道题可能跨页或被截断，请核对原图，或补传缺少的页面。']
       : []),
     ...(detail.analysis?.warnings ?? []),
-  ];
+  ].filter((warning, index, all) => all.indexOf(warning) === index);
   const selectedCause = taxonomy.causes.find((c) => c.code === causeCode);
 
   return (
@@ -234,6 +248,74 @@ export function ConfirmMistake(props: {
                   />
                 </Labeled>
               </div>
+              <div className="mt-4 space-y-3">
+                <Labeled label="识别题干">
+                  <textarea
+                    className={field}
+                    rows={4}
+                    value={fields.questionMarkdown}
+                    onChange={(event) =>
+                      set({ questionMarkdown: event.target.value })
+                    }
+                  />
+                </Labeled>
+                <Labeled label="识别出的解题过程（没有可留空）">
+                  <textarea
+                    className={field}
+                    rows={2}
+                    value={fields.studentWorkMarkdown}
+                    onChange={(event) =>
+                      set({ studentWorkMarkdown: event.target.value })
+                    }
+                  />
+                </Labeled>
+                <Labeled label="知识点">
+                  <select
+                    className={field}
+                    value={fields.knowledgePointCode}
+                    onChange={(event) =>
+                      set({ knowledgePointCode: event.target.value })
+                    }
+                  >
+                    <option value="other">请选择知识点</option>
+                    {taxonomy.knowledgePoints
+                      .filter((point) => point.code !== 'other')
+                      .map((point) => (
+                        <option
+                          className="text-ink"
+                          key={point.code}
+                          value={point.code}
+                        >
+                          {point.label}
+                        </option>
+                      ))}
+                    {fields.knowledgePointCode !== 'other' &&
+                      !taxonomy.knowledgePoints.some(
+                        (point) => point.code === fields.knowledgePointCode,
+                      ) && (
+                        <option
+                          className="text-ink"
+                          value={fields.knowledgePointCode}
+                        >
+                          原知识点：{fields.knowledgePointCode}
+                        </option>
+                      )}
+                  </select>
+                </Labeled>
+                {detail.incomplete && (
+                  <label className="flex items-center gap-2 text-sm text-white/75">
+                    <input
+                      type="checkbox"
+                      className="accent-mint"
+                      checked={completeChecked}
+                      onChange={(event) =>
+                        setCompleteChecked(event.target.checked)
+                      }
+                    />
+                    我已对照原卷核对并补齐题目
+                  </label>
+                )}
+              </div>
               <p className="mt-3 text-xs leading-relaxed text-white/50">
                 请对照原图核对，识别结果可能有误。
               </p>
@@ -297,11 +379,13 @@ export function ConfirmMistake(props: {
                         <span className="mt-1 block text-xs leading-relaxed text-white/55">
                           {cand?.evidence || c.description}
                         </span>
-                        {cand && (
-                          <span className="mt-2 block text-xs text-mint/80">
-                            AI 把握 {Math.round(cand.confidence * 100)}%
-                          </span>
-                        )}
+                        {cand?.confidenceKnown === true &&
+                          cand.code !== 'not_attempted' && (
+                            <span className="mt-2 block text-xs text-mint/80">
+                              AI 归因置信分 {Math.round(cand.confidence * 100)}{' '}
+                              / 100
+                            </span>
+                          )}
                       </span>
                     </label>
                   );
@@ -345,13 +429,21 @@ export function ConfirmMistake(props: {
           <button
             type="button"
             className={btn.primary}
-            disabled={busy || !causeCode || !fields.questionMarkdown.trim()}
+            disabled={
+              busy ||
+              !causeCode ||
+              !fields.questionMarkdown.trim() ||
+              !fields.correctAnswer.trim() ||
+              fields.knowledgePointCode === 'other' ||
+              (detail.incomplete && !completeChecked)
+            }
             onClick={() =>
               run(
                 () =>
                   window.api.confirmMistake({
                     ...payload,
                     rootCauseCode: causeCode,
+                    confirmComplete: completeChecked,
                   }),
                 detail.status === 'active' ? '已保存修改' : '已确认',
               )

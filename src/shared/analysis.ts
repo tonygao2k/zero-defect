@@ -107,6 +107,7 @@ export type RootCauseCandidate = {
   evidence: string;
   /** true 表示模型给的 code 不在清单内,已映射为 needs_review。 */
   unknownFromModel: boolean;
+  confidenceKnown?: boolean;
 };
 
 /** 经过校验和后处理、可以展示给家长确认的分析结果。 */

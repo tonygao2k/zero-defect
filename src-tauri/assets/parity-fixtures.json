@@ -72,18 +72,11 @@
         "hasStudentWork": false,
         "pages": [],
         "incomplete": false,
-        "rootCauses": [
-          {
-            "code": "carry_omission",
-            "confidence": 0.5,
-            "evidence": "漏进位",
-            "unknownFromModel": false
-          }
-        ],
-        "recommendedRootCause": "carry_omission",
+        "rootCauses": [],
+        "recommendedRootCause": null,
         "warnings": [
-          "缺少解题过程,归因仅供参考",
-          "归因把握不高,请家长仔细核对"
+          "缺少解题过程,未推断具体错因",
+          "没有找到可靠的归因,请家长手动选择"
         ],
         "figureKind": "none",
         "figureNote": ""
@@ -171,7 +164,7 @@
         "rootCauses": [
           {
             "code": "carry_omission",
-            "confidence": 1,
+            "confidence": 0.3,
             "evidence": "",
             "unknownFromModel": false
           },
@@ -183,7 +176,7 @@
           }
         ],
         "recommendedRootCause": "carry_omission",
-        "warnings": [],
+        "warnings": ["归因把握不高,请家长仔细核对"],
         "figureKind": "none",
         "figureNote": ""
       }
@@ -391,12 +384,6 @@
             "code": "not_attempted",
             "confidence": 1,
             "evidence": "卷面上没有孩子的作答",
-            "unknownFromModel": false
-          },
-          {
-            "code": "carry_omission",
-            "confidence": 0.5,
-            "evidence": "漏进位",
             "unknownFromModel": false
           }
         ],

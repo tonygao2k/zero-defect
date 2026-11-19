@@ -2,9 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { FigureView } from '../components/FigureView';
 import { Hero } from '../components/Hero';
 import { MarkdownView } from '../components/MarkdownView';
+import { PracticeQuestionReport } from '../components/PracticeQuestionReport';
 import { Note, Page, Waiting, btn } from '../components/ui';
 import { APP_DISPLAY_NAME } from '../shared/app-info';
 import type {
+  PracticeAnswerInput,
+  PracticeDisposition,
   PracticeHint,
   PracticeQuestion,
   PracticeResult,
@@ -17,9 +20,13 @@ type Stage =
   | { name: 'home' }
   | { name: 'generating' }
   | { name: 'answering'; session: PracticeSession }
-  | { name: 'submitting' }
   | { name: 'result'; session: PracticeSession; result: PracticeResult }
-  | { name: 'revising'; session: PracticeSession; result: PracticeResult };
+  | {
+      name: 'revising';
+      session: PracticeSession;
+      result: PracticeResult;
+      revisionMode: 'mistakes' | 'skipped';
+    };
 
 const LETTERS = ['A', 'B', 'C', 'D'];
 
@@ -86,15 +93,44 @@ function QuestionCard(props: {
   );
 }
 
-export function PracticePage() {
+export function PracticePage({ active }: { active: boolean }) {
   const [stage, setStage] = useState<Stage>({ name: 'home' });
   const [stats, setStats] = useState<HomeStats | null>(null);
   const [error, setError] = useState('');
   const startedAt = useRef(0);
+  const resultSessionId =
+    stage.name === 'result' || stage.name === 'revising'
+      ? stage.session.sessionId
+      : null;
 
   useEffect(() => {
-    if (stage.name === 'home') void window.api.getHomeStats().then(setStats);
-  }, [stage.name]);
+    if (active && stage.name === 'home')
+      void window.api.getHomeStats().then(setStats);
+  }, [active, stage.name]);
+
+  useEffect(() => {
+    if (!active || !resultSessionId) return;
+    let current = true;
+    void window.api
+      .getPracticeResult({ sessionId: resultSessionId })
+      .then((response) => {
+        if (!current) return;
+        if (!response.ok) return setError(response.error);
+        setError('');
+        setStage((latest) =>
+          (latest.name === 'result' || latest.name === 'revising') &&
+          latest.session.sessionId === resultSessionId
+            ? { ...latest, result: response.value }
+            : latest,
+        );
+      })
+      .catch(() => {
+        if (current) setError('暂时无法刷新练习结果。');
+      });
+    return () => {
+      current = false;
+    };
+  }, [active, resultSessionId]);
 
   const start = async () => {
     setError('');
@@ -116,35 +152,60 @@ export function PracticePage() {
         hint="每道题都会再算一遍确认答案没错,大约需要半分钟。"
       />
     );
-  if (stage.name === 'submitting') return <Waiting fill title="正在提交…" />;
-
   if (stage.name === 'answering')
     return (
       <Answering
         session={stage.session}
         onSubmit={async (answers) => {
-          setStage({ name: 'submitting' });
-          const res = await window.api.submitPractice({
-            sessionId: stage.session.sessionId,
-            answers,
-            elapsedMs: Date.now() - startedAt.current,
-          });
-          if (!res.ok) {
-            setError(res.error);
-            return setStage({ name: 'answering', session: stage.session });
-          }
           setError('');
-          setStage({
-            name: 'result',
-            session: stage.session,
-            result: res.value,
-          });
+          try {
+            const res = await window.api.submitPractice({
+              sessionId: stage.session.sessionId,
+              answers,
+              elapsedMs: Date.now() - startedAt.current,
+            });
+            if (!res.ok) return setError(res.error);
+            setStage({
+              name: 'result',
+              session: stage.session,
+              result: res.value,
+            });
+          } catch {
+            setError('暂时无法提交，已保留当前作答，请重试。');
+          }
         }}
         error={error}
       />
     );
 
-  if (stage.name === 'result')
+  if (stage.name === 'result' || stage.name === 'revising') {
+    const result = stage.result;
+    const revisionIds = [
+      ...result.wrongQuestionIds,
+      ...result.unsureQuestionIds,
+    ];
+    const beginRevision = (revisionMode: 'mistakes' | 'skipped') =>
+      setStage({ ...stage, name: 'revising', revisionMode });
+    if (stage.name === 'revising') {
+      const ids = (
+        stage.revisionMode === 'skipped'
+          ? result.skippedQuestionIds
+          : revisionIds
+      ).filter((id) =>
+        stage.session.questions.some((question) => question.id === id),
+      );
+      if (ids.length)
+        return (
+          <Revising
+            key={ids.join(':')}
+            session={stage.session}
+            questionIds={ids}
+            onDone={() =>
+              setStage({ name: 'result', session: stage.session, result })
+            }
+          />
+        );
+    }
     return (
       <Page
         title="练习结果"
@@ -163,17 +224,20 @@ export function PracticePage() {
             >
               结束练习
             </button>
-            {stage.result.wrongCount > 0 && (
+            {result.skippedQuestionIds.length > 0 && (
+              <button
+                type="button"
+                className={btn.secondary}
+                onClick={() => beginRevision('skipped')}
+              >
+                重做未作答
+              </button>
+            )}
+            {revisionIds.length > 0 && (
               <button
                 type="button"
                 className={btn.primary}
-                onClick={() =>
-                  setStage({
-                    name: 'revising',
-                    session: stage.session,
-                    result: stage.result,
-                  })
-                }
+                onClick={() => beginRevision('mistakes')}
               >
                 修改错题
               </button>
@@ -184,48 +248,77 @@ export function PracticePage() {
         <section className="mx-auto max-w-2xl rounded-3xl bg-white/5 p-8 ring-1 ring-inset ring-white/10">
           <p className="text-sm font-semibold text-mint">本次练习已完成</p>
           <h2 className="mt-3 text-2xl font-semibold">
-            {stage.result.wrongCount === 0
+            {result.correctCount > 0 &&
+            !(
+              result.wrongCount +
+              result.unsureCount +
+              result.skippedCount +
+              result.invalidCount +
+              result.unknownCount
+            )
               ? '全部答对，继续保持！'
-              : '完成练习，再把错题弄明白。'}
+              : '看看这一轮的作答结果。'}
           </h2>
-          <div className="mt-6 grid grid-cols-2 gap-4">
-            <div className="rounded-2xl bg-mint/10 p-5">
-              <p className="text-sm text-white/60">正确</p>
-              <p className="mt-2 text-4xl font-semibold text-mint">
-                {stage.result.correctCount}
-                <span className="ml-2 text-sm font-normal">道</span>
-              </p>
-            </div>
-            <div className="rounded-2xl bg-sun/10 p-5">
-              <p className="text-sm text-white/60">待订正</p>
-              <p className="mt-2 text-4xl font-semibold text-sun">
-                {stage.result.wrongCount}
-                <span className="ml-2 text-sm font-normal">道</span>
-              </p>
-            </div>
+          <div className="mt-6 grid grid-cols-2 gap-3">
+            {[
+              {
+                label: '答对',
+                count: result.correctCount,
+                style: 'bg-mint/10 text-mint',
+              },
+              {
+                label: '答错',
+                count: result.wrongCount,
+                style: 'bg-sun/10 text-sun',
+              },
+              {
+                label: '不会',
+                count: result.unsureCount,
+                style: 'bg-white/5 text-white',
+              },
+              {
+                label: '未作答',
+                count: result.skippedCount,
+                style: 'bg-white/5 text-white',
+              },
+            ].map(({ label, count, style }) => (
+              <div key={label} className={`rounded-2xl p-4 ${style}`}>
+                <p className="text-sm text-white/70">{label}</p>
+                <p className="mt-1 text-3xl font-semibold">
+                  {count}
+                  <span className="ml-2 text-sm font-normal">道</span>
+                </p>
+              </div>
+            ))}
           </div>
-          {stage.result.wrongCount > 0 && (
-            <p className="mt-5 text-sm leading-relaxed text-white/60">
-              可以现在修改错题，也可以结束练习。这些知识点会记下来，之后还会再练。
+          {result.invalidCount > 0 && (
+            <div className="mt-4 text-sm text-white/70">
+              <p>另有 {result.invalidCount} 道已作废，不计入结果。</p>
+              <ul className="mt-1 space-y-1">
+                {result.invalidQuestions.map((item) => (
+                  <li
+                    className="[overflow-wrap:anywhere]"
+                    key={item.questionId}
+                  >
+                    第 {item.position + 1} 题：{item.reason || '复核确认有误'}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {result.unknownCount > 0 && (
+            <p className="mt-4 text-sm text-white/70">
+              另有 {result.unknownCount} 道历史作答状态不明，不计入掌握度。
             </p>
           )}
+          <p className="mt-4 text-sm leading-relaxed text-white/70">
+            未作答不扣减掌握度。标记不会的内容以后会再练。
+          </p>
+          {error && <Note tone="error">{error}</Note>}
         </section>
       </Page>
     );
-
-  if (stage.name === 'revising')
-    return (
-      <Revising
-        session={stage.session}
-        wrongIds={stage.result.wrongQuestionIds}
-        onDone={async () => {
-          await window.api.finishPractice({
-            sessionId: stage.session.sessionId,
-          });
-          setStage({ name: 'home' });
-        }}
-      />
-    );
+  }
 
   const canStart = (stats?.practiceablePairs ?? 0) > 0;
   return (
@@ -289,7 +382,7 @@ export function PracticePage() {
                 label: '累计练习',
                 value: stats.answeredCount,
                 unit: '道',
-                hint: '每一次作答都算数',
+                hint: '有效的独立作答',
               },
               {
                 label: '已经掌握',
@@ -320,6 +413,12 @@ export function PracticePage() {
             ))}
           </section>
         )}
+        {!!stats?.unsureRecheckPending && (
+          <Note tone="info">
+            有 {stats.unsureRecheckPending}{' '}
+            项标记过「不会」，后续会优先安排同类新题。
+          </Note>
+        )}
         {stats &&
           (stats.guidedRecheck.pending > 0 ||
             stats.guidedRecheck.completed > 0) && (
@@ -343,13 +442,50 @@ export function PracticePage() {
 function Answering(props: {
   session: PracticeSession;
   error: string;
-  onSubmit: (answers: { questionId: string; answer: string }[]) => void;
+  onSubmit: (answers: PracticeAnswerInput[]) => Promise<void>;
 }) {
   const { questions } = props.session;
   const [index, setIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<
+    Record<string, Omit<PracticeAnswerInput, 'questionId'>>
+  >({});
+  const [busy, setBusy] = useState(false);
   const q = questions[index];
   const last = index === questions.length - 1;
+  const current = answers[q.id];
+  const mark = (disposition: PracticeDisposition) =>
+    setAnswers((previous) => ({
+      ...previous,
+      [q.id]: {
+        answer: '',
+        disposition:
+          previous[q.id]?.disposition === disposition ? undefined : disposition,
+      },
+    }));
+
+  const submit = async () => {
+    const blank = questions.filter(
+      ({ id }) => !answers[id]?.disposition && !answers[id]?.answer.trim(),
+    ).length;
+    if (
+      blank > 0 &&
+      !window.confirm(
+        `还有 ${blank} 道题留空，提交后记为未作答，不算错。确定提交吗？`,
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      await props.onSubmit(
+        questions.map(({ id }) => ({
+          questionId: id,
+          ...(answers[id] ?? { answer: '' }),
+        })),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <Page
@@ -366,7 +502,7 @@ function Answering(props: {
           <button
             type="button"
             className={btn.secondary}
-            disabled={index === 0}
+            disabled={busy || index === 0}
             onClick={() => setIndex(index - 1)}
           >
             上一道
@@ -375,31 +511,16 @@ function Answering(props: {
             <button
               type="button"
               className={btn.primary}
-              onClick={() => {
-                const blank = questions.filter(
-                  (x) => !(answers[x.id] ?? '').trim(),
-                );
-                if (
-                  blank.length > 0 &&
-                  !window.confirm(
-                    `还有 ${blank.length} 道题没做,确定提交吗?没做的题算错。`,
-                  )
-                )
-                  return;
-                props.onSubmit(
-                  questions.map((x) => ({
-                    questionId: x.id,
-                    answer: answers[x.id] ?? '',
-                  })),
-                );
-              }}
+              disabled={busy}
+              onClick={() => void submit()}
             >
-              提交
+              {busy ? '提交中…' : '提交'}
             </button>
           ) : (
             <button
               type="button"
               className={btn.secondary}
+              disabled={busy}
               onClick={() => setIndex(index + 1)}
             >
               下一道
@@ -412,9 +533,44 @@ function Answering(props: {
         <QuestionCard
           key={q.id}
           question={q}
-          value={answers[q.id] ?? ''}
-          onChange={(v) => setAnswers({ ...answers, [q.id]: v })}
+          value={current?.answer ?? ''}
+          disabled={busy}
+          onChange={(answer) =>
+            setAnswers((previous) => ({ ...previous, [q.id]: { answer } }))
+          }
         />
+        <div
+          className="flex flex-wrap gap-2"
+          role="group"
+          aria-label="作答状态"
+        >
+          {(
+            [
+              { disposition: 'unsure', label: '这题不会' },
+              { disposition: 'skipped', label: '跳过这题' },
+            ] as const
+          ).map(({ disposition, label }) => (
+            <button
+              type="button"
+              key={disposition}
+              className={`${btn.small} aria-pressed:bg-mint/20 aria-pressed:text-mint`}
+              aria-pressed={current?.disposition === disposition}
+              disabled={busy}
+              onClick={() => mark(disposition)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {current?.disposition && (
+          <Note tone="info">
+            {current.disposition === 'unsure'
+              ? '已标记为不会，后续会再练。'
+              : '已标记为跳过，不计入对错。'}{' '}
+            输入答案可修改标记。
+          </Note>
+        )}
+        <PracticeQuestionReport questionId={q.id} />
         {props.error && (
           <div className="mt-3">
             <Note tone="error">{props.error}</Note>
@@ -427,11 +583,11 @@ function Answering(props: {
 
 function Revising(props: {
   session: PracticeSession;
-  wrongIds: string[];
+  questionIds: string[];
   onDone: () => void;
 }) {
   const questions = props.session.questions.filter((x) =>
-    props.wrongIds.includes(x.id),
+    props.questionIds.includes(x.id),
   );
   const [index, setIndex] = useState(0);
   const [value, setValue] = useState('');
@@ -503,7 +659,7 @@ function Revising(props: {
             disabled={busy}
             onClick={props.onDone}
           >
-            结束练习
+            返回练习结果
           </button>
           {settled ? (
             <button type="button" className={btn.primary} onClick={next}>
@@ -594,6 +750,7 @@ function Revising(props: {
             )}
           </div>
         )}
+        <PracticeQuestionReport questionId={q.id} />
         {error && <Note tone="error">{error}</Note>}
       </div>
     </Page>

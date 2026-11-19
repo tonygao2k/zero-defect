@@ -215,31 +215,45 @@ pub fn postprocess(
     if quality == "blurry" {
         warnings.push("图片有些模糊,请仔细核对识别出的文字".into());
     }
+    let work = text(raw, "student_work_markdown").trim();
     let unanswered = text(raw, "student_answer").trim().is_empty()
-        && text(raw, "student_work_markdown").trim().is_empty()
+        && work.is_empty()
         && active.contains("not_attempted");
-    let has_work = raw["has_student_work"].as_bool().unwrap_or(false);
+    let has_work = raw["has_student_work"] == true && !work.is_empty();
     let incomplete = raw["incomplete"] == true;
     if unanswered {
         warnings.push("孩子没有作答,请确认是不会做还是漏做了".into());
     } else if !has_work {
-        warnings.push("缺少解题过程,归因仅供参考".into());
+        warnings.push("缺少解题过程,未推断具体错因".into());
     }
     if incomplete {
         warnings.push("这道题被页边截断了,请补传缺的那一页,或核对题目内容".into());
     }
     let mut candidates = Vec::<Value>::new();
-    for c in raw["root_causes"].as_array().unwrap_or(&Vec::new()) {
+    let causes_with_work = raw["root_causes"].as_array().filter(|_| has_work);
+    for c in causes_with_work.into_iter().flatten() {
+        if text(c, "code").trim() == "not_attempted" {
+            continue;
+        }
         let known = active.contains(text(c, "code").trim());
         let code = if known {
             text(c, "code").trim()
         } else {
             "needs_review"
         };
-        let confidence = numeric(&c["confidence"]).clamp(0.0, if has_work { 1.0 } else { 0.5 });
-        let candidate = json!({"code":code,"confidence":confidence,"evidence":text(c,"evidence").trim(),"unknownFromModel":!known});
+        let confidence = numeric(&c["confidence"]).clamp(0.0, 1.0);
+        let confidence_known = c["confidence"]
+            .as_f64()
+            .or_else(|| c["confidence"].as_str().and_then(|raw| raw.parse().ok()))
+            .is_some_and(|score| (0.0..=1.0).contains(&score));
+        let candidate = json!({"code":code,"confidence":confidence,"confidenceKnown":confidence_known,"evidence":text(c,"evidence").trim(),"unknownFromModel":!known});
         if let Some(index) = candidates.iter().position(|v| text(v, "code") == code) {
-            if numeric(&candidates[index]["confidence"]) < confidence {
+            if (confidence_known, confidence)
+                > (
+                    candidates[index]["confidenceKnown"] == true,
+                    numeric(&candidates[index]["confidence"]),
+                )
+            {
                 candidates[index] = candidate;
             }
         } else {
@@ -247,17 +261,14 @@ pub fn postprocess(
         }
     }
     if unanswered {
-        let candidate = json!({"code":"not_attempted","confidence":1.0,"evidence":"卷面上没有孩子的作答","unknownFromModel":false});
-        if let Some(index) = candidates
-            .iter()
-            .position(|v| text(v, "code") == "not_attempted")
-        {
-            candidates[index] = candidate;
-        } else {
-            candidates.push(candidate);
-        }
+        let candidate = json!({"code":"not_attempted","confidence":1.0,"confidenceKnown":true,"evidence":"卷面上没有孩子的作答","unknownFromModel":false});
+        candidates.push(candidate);
     }
-    candidates.sort_by(|a, b| numeric(&b["confidence"]).total_cmp(&numeric(&a["confidence"])));
+    candidates.sort_by(|a, b| {
+        (b["confidenceKnown"] == true)
+            .cmp(&(a["confidenceKnown"] == true))
+            .then_with(|| numeric(&b["confidence"]).total_cmp(&numeric(&a["confidence"])))
+    });
     if candidates.iter().any(|c| c["unknownFromModel"] == true) {
         warnings.push("模型给出了不在清单内的归因,请从列表中重新选择".into());
     }
@@ -276,7 +287,9 @@ pub fn postprocess(
     };
     if let Some(code) = recommended {
         if usable.iter().any(|c| {
-            text(c, "code") == code && numeric(&c["confidence"]) < settings.confidence_threshold
+            text(c, "code") == code
+                && (c["confidenceKnown"] != true
+                    || numeric(&c["confidence"]) < settings.confidence_threshold)
         }) {
             warnings.push("归因把握不高,请家长仔细核对".into());
         }
@@ -306,7 +319,7 @@ pub fn postprocess(
         _ => "other",
     };
     Ok(
-        json!({"label":text(raw,"label").trim(),"questionMarkdown":q,"studentAnswer":text(raw,"student_answer").trim(),"studentWorkMarkdown":text(raw,"student_work_markdown").trim(),"correctAnswer":text(raw,"correct_answer").trim(),"knowledgePointCode":kp,"hasStudentWork":has_work,"pages":pages,"incomplete":incomplete,"rootCauses":candidates,"recommendedRootCause":recommended,"warnings":warnings,"figureKind":kind,"figureNote":if kind=="none"{String::new()}else{text(raw,"figure_note").trim().chars().take(200).collect()}}),
+        json!({"label":text(raw,"label").trim(),"questionMarkdown":q,"studentAnswer":text(raw,"student_answer").trim(),"studentWorkMarkdown":text(raw,"student_work_markdown").trim(),"correctAnswer":text(raw,"correct_answer").trim(),"knowledgePointCode":kp,"hasStudentWork":has_work,"imageQuality":quality,"pages":pages,"incomplete":incomplete,"rootCauses":candidates,"recommendedRootCause":recommended,"warnings":warnings,"figureKind":kind,"figureNote":if kind=="none"{String::new()}else{text(raw,"figure_note").trim().chars().take(200).collect()}}),
     )
 }
 fn analysis_messages(grade: i64, causes: &[Value], points: &[Value], urls: Vec<String>) -> Value {

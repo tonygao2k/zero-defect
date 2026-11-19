@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConfirmMistake } from '../components/ConfirmMistake';
 import { MarkdownView } from '../components/MarkdownView';
+import { PracticeReviewPage } from '../components/PracticeReviewPage';
 import {
   BookIcon,
   ChevronDownIcon,
@@ -16,7 +17,11 @@ import {
   iconBtn,
   inputClass,
 } from '../components/ui';
-import type { MistakeSummary } from '../shared/mistakes';
+import {
+  reviewReasonLabels,
+  type MistakeReviewReason,
+  type MistakeSummary,
+} from '../shared/mistakes';
 import { PAPER_TITLE_MAX_LENGTH, type PaperSummary } from '../shared/papers';
 
 type Filter = 'all' | 'pending' | 'confirmed';
@@ -43,6 +48,7 @@ export function LibraryPage() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [msg, setMsg] = useState<Msg>(null);
   const [busy, setBusy] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const reload = useCallback(async () => {
     const list = await window.api.listPapers({ allTerms });
@@ -121,6 +127,9 @@ export function LibraryPage() {
     await reload();
   };
 
+  if (reviewOpen)
+    return <PracticeReviewPage onBack={() => setReviewOpen(false)} />;
+
   if (detailId) {
     return (
       <Page title="错题库" fixed>
@@ -163,7 +172,7 @@ export function LibraryPage() {
     } else {
       setMsg({
         tone: 'info',
-        text: 'AI 没能确定这道题的原因或知识点,或题目不完整,请在详情里补充后再确认。',
+        text: `需要逐题核对：${res.value.reasons.map((reason) => reviewReasonLabels[reason]).join('、')}。`,
       });
       setDetailId(id);
     }
@@ -178,12 +187,19 @@ export function LibraryPage() {
     setBusy(false);
     if (!res.ok) setMsg({ tone: 'error', text: res.error });
     else {
-      const { confirmed, skipped } = res.value;
+      const { confirmed, skipped, skippedReasons } = res.value;
+      const reasons = (Object.keys(reviewReasonLabels) as MistakeReviewReason[])
+        .filter((reason) => skippedReasons[reason])
+        .map(
+          (reason) =>
+            `${reviewReasonLabels[reason]} ${skippedReasons[reason]} 道`,
+        )
+        .join('、');
       setMsg({
         tone: 'ok',
         text:
           skipped > 0
-            ? `已确认 ${confirmed} 道;另有 ${skipped} 道需要你逐题核对(把握不高、知识点不明或题目不完整)。`
+            ? `已确认 ${confirmed} 道；另有 ${skipped} 道需要逐题核对。原因（同一题可能有多项）：${reasons}。`
             : `已确认 ${confirmed} 道。`,
       });
     }
@@ -202,23 +218,32 @@ export function LibraryPage() {
       description="按试卷查看错题，核对答案与错误原因。"
       fixed
       headerExtra={
-        <label className="relative flex shrink-0 items-center text-sm text-white/65">
-          <span className="sr-only">学期范围</span>
-          <select
-            aria-label="学期范围"
-            value={allTerms ? 'all' : 'current'}
-            onChange={(e) => setAllTerms(e.target.value === 'all')}
-            className="h-10 appearance-none rounded-full bg-white/10 px-4 pr-10 text-sm font-medium text-white/85 outline-none ring-1 ring-inset ring-white/15 transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-mint"
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            className={btn.small}
+            onClick={() => setReviewOpen(true)}
           >
-            <option value="current" className="text-ink">
-              当前学期
-            </option>
-            <option value="all" className="text-ink">
-              全部学期
-            </option>
-          </select>
-          <ChevronDownIcon className="pointer-events-none absolute right-3 h-4 w-4 text-white/60" />
-        </label>
+            练习题复核
+          </button>
+          <label className="relative flex shrink-0 items-center text-sm text-white/65">
+            <span className="sr-only">学期范围</span>
+            <select
+              aria-label="学期范围"
+              value={allTerms ? 'all' : 'current'}
+              onChange={(e) => setAllTerms(e.target.value === 'all')}
+              className="h-10 appearance-none rounded-full bg-white/10 px-4 pr-10 text-sm font-medium text-white/85 outline-none ring-1 ring-inset ring-white/15 transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-mint"
+            >
+              <option value="current" className="text-ink">
+                当前学期
+              </option>
+              <option value="all" className="text-ink">
+                全部学期
+              </option>
+            </select>
+            <ChevronDownIcon className="pointer-events-none absolute right-3 h-4 w-4 text-white/60" />
+          </label>
+        </div>
       }
     >
       <div className="flex min-h-0 flex-1 gap-5 p-1">
@@ -555,7 +580,7 @@ function MistakeRow(props: {
           </span>
           {(m.incomplete || m.needsAttention) && (
             <span className="text-[11px] text-sun/80">
-              {m.incomplete ? '题目不完整' : '请仔细核对'}
+              {m.incomplete ? '题目不完整' : '需复核'}
             </span>
           )}
         </span>
@@ -579,9 +604,9 @@ function MistakeRow(props: {
             type="button"
             className={`${btn.small} !h-8 !px-3 !text-xs`}
             disabled={props.busy}
-            onClick={props.onConfirm}
+            onClick={m.needsAttention ? props.onOpen : props.onConfirm}
           >
-            确认
+            {m.needsAttention ? '复核' : '确认'}
           </button>
         )}
         <button

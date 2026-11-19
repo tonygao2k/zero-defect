@@ -111,7 +111,9 @@ export function App() {
 
       <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <div data-tauri-drag-region className="absolute inset-x-0 top-0 h-10" />
-        {page === 'practice' && <PracticePage />}
+        <div className="h-full" hidden={page !== 'practice'}>
+          <PracticePage active={page === 'practice'} />
+        </div>
         {/* 上传页常驻挂载只做隐藏:切换页签时已添加的图片不会丢。 */}
         <div className="h-full" hidden={page !== 'upload'}>
           <UploadPage onOpenLibrary={() => setPage('library')} />
