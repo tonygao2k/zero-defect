@@ -60,7 +60,7 @@ macOS 制作 DMG 时如果遇到 Finder AppleEvent 超时，可用 `CI=true npm 
 完成发布前检查并提交待发布的功能或修复后，在 `main` 分支、工作区和暂存区均干净时运行：
 
 ```bash
-scripts/push-to-release-sh v1.0.3
+node scripts/push-to-release.mjs v1.1.0
 ```
 
 将示例标签换成高于当前版本且尚未使用的 `vX.Y.Z`。脚本只改下表中的五个文件，调用版本检查脚本，再以 `发布 vX.Y.Z` 提交并推送到 `origin/main`。分支推送成功后，脚本给该提交打标签并推送，触发 GitHub Actions 打包发布。脚本不会运行发布前测试，也不会等待分支 CI；请在运行前完成验收，推送后按第 4 步确认发布结果。若版本提交已创建但后续步骤失败，先核对远端分支和标签，再从失败的 Git 命令继续，不要重跑整个脚本。

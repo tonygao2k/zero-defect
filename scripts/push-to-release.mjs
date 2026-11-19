@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-const { spawnSync } = require('node:child_process');
-const { readFileSync, writeFileSync } = require('node:fs');
-const { resolve } = require('node:path');
+import { spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = resolve(__dirname, '..');
+const root = fileURLToPath(new URL('../', import.meta.url));
 const packageFile = 'package.json';
 const lockFile = 'package-lock.json';
 const configFile = 'src-tauri/tauri.conf.json';
@@ -65,7 +66,7 @@ function release(args) {
   const [tag] = args;
   const targetParts = versionParts(tag);
   if (args.length !== 1 || !targetParts) {
-    throw new Error('用法：scripts/push-to-release-sh v1.0.3');
+    throw new Error('用法：node scripts/push-to-release.mjs vX.Y.Z（例如 v1.1.0）');
   }
   if (git('branch', '--show-current') !== 'main') {
     throw new Error('请切换到 main 分支后再发布');
