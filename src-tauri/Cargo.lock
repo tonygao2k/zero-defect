@@ -5693,7 +5693,7 @@ dependencies = [
 
 [[package]]
 name = "zero-defect"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "arboard",
  "atomicwrites",

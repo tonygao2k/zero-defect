@@ -1,7 +1,7 @@
 {
   "name": "zero-defect",
   "productName": "超级错题本",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "小学生错题针对性训练系统(Zero Defect)",
   "keywords": [],
