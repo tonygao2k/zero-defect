@@ -1370,14 +1370,34 @@ fn image_handles_normalize_and_expire() {
 #[test]
 fn settings_validate_and_persist() {
     let (d, s) = setup();
+    fs::write(
+        d.path().join("settings.json"),
+        r#"{"grade":4,"semester":2}"#,
+    )
+    .unwrap();
+    drop(s);
+    let s = AppState::new(d.path().to_owned(), vec![]).unwrap();
     {
         let mut i = s.lock().unwrap();
+        assert_eq!(i.settings.grade, 4);
+        assert_eq!(i.settings.practice_question_count, 5);
         assert!(i.save_settings(&json!({"grade":7})).is_err());
+        for count in [json!(0), json!(11), json!(4.5)] {
+            assert!(i
+                .save_settings(&json!({"practiceQuestionCount":count}))
+                .is_err());
+        }
+        i.save_settings(&json!({"practiceQuestionCount":8,"practiceDifficulty":"hard"}))
+            .unwrap();
         i.save_settings(&json!({"grade":5,"semester":2})).unwrap();
     }
     drop(s);
     let s = AppState::new(d.path().to_owned(), vec![]).unwrap();
-    assert_eq!(s.lock().unwrap().settings.grade, 5);
+    let i = s.lock().unwrap();
+    assert_eq!(i.settings.grade, 5);
+    let settings = json!(i.settings);
+    assert_eq!(settings["practiceQuestionCount"], 8);
+    assert_eq!(settings["practiceDifficulty"], "hard");
 }
 #[test]
 fn answers_preserve_original_comparison_rules() {
@@ -1652,6 +1672,13 @@ fn ai_http_recognition_and_practice_flow() {
     let session = tauri::async_runtime::block_on(practice::start(&state)).unwrap();
     assert_eq!(session["questions"].as_array().unwrap().len(), 1);
     assert!(session["questions"][0].get("correctAnswer").is_none());
+    {
+        let mut i = state.lock().unwrap();
+        i.save_settings(&json!({"practiceQuestionCount":2}))
+            .unwrap();
+        let stats = mastery::stats(&i).unwrap();
+        assert_eq!(stats["dailyPractice"]["plan"]["reinforcement"], 2);
+    }
     let resumed = tauri::async_runtime::block_on(practice::start(&state)).unwrap();
     assert_eq!(session, resumed);
     let requests = server.join().unwrap();
@@ -1670,18 +1697,25 @@ fn ai_http_recognition_and_practice_flow() {
     }
     let generated = json!({"questions":[
         {"question_markdown":"12 + 1 = ?","answer_type":"number","correct_answer":"13"},
-        {"question_markdown":"13+2=?","answer_type":"number","correct_answer":"15"}
+        {"question_markdown":"13+2=?","answer_type":"number","correct_answer":"15"},
+        {"question_markdown":"11+4=?","answer_type":"number","correct_answer":"15"}
     ]});
     let (endpoint, server) = mock_ai(vec![
         (200, reply(&generated.to_string())),
+        (200, reply("{\"answer\":\"15\"}")),
         (200, reply("{\"answer\":\"15\"}")),
     ]);
     state.ai_endpoint = endpoint;
     let extra = tauri::async_runtime::block_on(practice::start(&state)).unwrap();
     assert_ne!(extra["sessionId"], session["sessionId"]);
-    assert_eq!(extra["questions"].as_array().unwrap().len(), 1);
+    assert_eq!(extra["questions"].as_array().unwrap().len(), 2);
     assert_eq!(extra["questions"][0]["questionMarkdown"], "13+2=?");
-    assert_eq!(server.join().unwrap().len(), 2);
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0]["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("请出 4 道新题"));
     let i = state.lock().unwrap();
     submit_on(&i, &extra, "15", now);
     assert_eq!(

@@ -66,6 +66,7 @@ pub struct Settings {
     pub curriculum_id: String,
     pub confidence_threshold: f64,
     pub practice_difficulty: PracticeDifficulty,
+    pub practice_question_count: usize,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -75,6 +76,7 @@ impl Default for Settings {
             curriculum_id: "pep_primary_math".into(),
             confidence_threshold: 0.7,
             practice_difficulty: PracticeDifficulty::Medium,
+            practice_question_count: 5,
         }
     }
 }
@@ -86,6 +88,9 @@ impl Settings {
             || !(0.0..=1.0).contains(&self.confidence_threshold)
         {
             return Err("设置不合法,请检查年级和学期".into());
+        }
+        if !(1..=10).contains(&self.practice_question_count) {
+            return Err("每次练习的题目数量必须是 1 到 10 道".into());
         }
         Ok(())
     }
@@ -167,7 +172,10 @@ impl Inner {
         }
     }
     pub fn save_settings(&mut self, input: &Value) -> AppResult<Value> {
-        let s: Settings = serde_json::from_value(input.clone()).map_err(|_| "设置格式不合法")?;
+        let updates = input.as_object().ok_or("设置格式不合法")?;
+        let mut merged = json!(self.settings);
+        merged.as_object_mut().unwrap().extend(updates.clone());
+        let s: Settings = serde_json::from_value(merged).map_err(|_| "设置格式不合法")?;
         s.validate()?;
         let file = self.directory.join("settings.json");
         atomic_write(&file, &serde_json::to_vec_pretty(&s).map_err(db::err)?)?;

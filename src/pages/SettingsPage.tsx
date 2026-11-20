@@ -3,7 +3,11 @@ import { ChevronDownIcon } from '../components/Icons';
 import { Note, Page, btn, inputClass } from '../components/ui';
 import { BAILIAN } from '../shared/bailian';
 import type { AiConfig, UpdateCheckResult } from '../shared/ipc';
-import type { Settings } from '../shared/settings';
+import {
+  DEFAULT_PRACTICE_QUESTION_COUNT,
+  MAX_PRACTICE_QUESTION_COUNT,
+  type Settings,
+} from '../shared/settings';
 
 const GRADES = ['一', '二', '三', '四', '五', '六'];
 const PRACTICE_DIFFICULTIES = [
@@ -142,7 +146,10 @@ function GradeCard() {
 
   const save = async () => {
     setBusy(true);
-    const res = await window.api.saveSettings(settings);
+    const res = await window.api.saveSettings({
+      grade: settings.grade,
+      semester: settings.semester,
+    });
     setBusy(false);
     if (!res.ok) return setMsg({ tone: 'error', text: res.error });
     setSettings(res.value);
@@ -303,12 +310,16 @@ function ModelCard() {
   const changed =
     settings !== null &&
     saved !== null &&
-    settings.practiceDifficulty !== saved.practiceDifficulty;
+    (settings.practiceDifficulty !== saved.practiceDifficulty ||
+      settings.practiceQuestionCount !== saved.practiceQuestionCount);
 
-  const saveDifficulty = async () => {
+  const savePracticeSettings = async () => {
     if (!settings) return;
     setBusy(true);
-    const res = await window.api.saveSettings(settings);
+    const res = await window.api.saveSettings({
+      practiceDifficulty: settings.practiceDifficulty,
+      practiceQuestionCount: settings.practiceQuestionCount,
+    });
     setBusy(false);
     if (!res.ok) return setMsg({ tone: 'error', text: res.error });
     setSettings(res.value);
@@ -351,45 +362,88 @@ function ModelCard() {
         </p>
       )}
       <div className="mt-6 border-t border-white/10 pt-5">
-        <label className="block max-w-md min-w-0">
-          <span className="mb-2 block text-sm text-white/75">出题难度</span>
-          <div className="relative">
-            <select
-              aria-label="出题难度"
-              value={settings?.practiceDifficulty ?? 'medium'}
-              onChange={(e) => {
-                const value = e.target.value;
-                if (value !== 'easy' && value !== 'medium' && value !== 'hard')
-                  return;
-                if (settings) {
-                  setSettings({ ...settings, practiceDifficulty: value });
-                  setMsg(null);
+        <div className="grid gap-4 @min-[360px]:grid-cols-2">
+          <label className="block min-w-0">
+            <span className="mb-2 block text-sm text-white/75">出题难度</span>
+            <div className="relative">
+              <select
+                aria-label="出题难度"
+                value={settings?.practiceDifficulty ?? 'medium'}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (
+                    value !== 'easy' &&
+                    value !== 'medium' &&
+                    value !== 'hard'
+                  )
+                    return;
+                  if (settings) {
+                    setSettings({ ...settings, practiceDifficulty: value });
+                    setMsg(null);
+                  }
+                }}
+                disabled={!settings || busy}
+                className={`${inputClass} appearance-none pr-11`}
+              >
+                {PRACTICE_DIFFICULTIES.map((item) => (
+                  <option
+                    key={item.value}
+                    value={item.value}
+                    className="text-ink"
+                  >
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/60" />
+            </div>
+            <span className="mt-2 block text-xs text-white/50">
+              用于下一次智能练习出题，默认建议使用“适中”。
+            </span>
+          </label>
+          <label className="block min-w-0">
+            <span className="mb-2 block text-sm text-white/75">
+              每次练习的题目数量
+            </span>
+            <div className="relative">
+              <select
+                aria-label="每次练习的题目数量"
+                value={
+                  settings?.practiceQuestionCount ??
+                  DEFAULT_PRACTICE_QUESTION_COUNT
                 }
-              }}
-              disabled={!settings || busy}
-              className={`${inputClass} appearance-none pr-11`}
-            >
-              {PRACTICE_DIFFICULTIES.map((item) => (
-                <option
-                  key={item.value}
-                  value={item.value}
-                  className="text-ink"
-                >
-                  {item.label}
-                </option>
-              ))}
-            </select>
-            <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/60" />
-          </div>
-          <span className="mt-2 block text-xs text-white/50">
-            用于下一次智能练习出题，默认建议使用“适中”。
-          </span>
-        </label>
+                onChange={(event) => {
+                  if (!settings) return;
+                  setSettings({
+                    ...settings,
+                    practiceQuestionCount: Number(event.target.value),
+                  });
+                  setMsg(null);
+                }}
+                disabled={!settings || busy}
+                className={`${inputClass} appearance-none pr-11`}
+              >
+                {Array.from(
+                  { length: MAX_PRACTICE_QUESTION_COUNT },
+                  (_, index) => index + 1,
+                ).map((count) => (
+                  <option key={count} value={count} className="text-ink">
+                    {count} 道
+                  </option>
+                ))}
+              </select>
+              <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/60" />
+            </div>
+            <span className="mt-2 block text-xs text-white/50">
+              默认 5 道，新一轮练习生效；题目不足时可能少于设定数量。
+            </span>
+          </label>
+        </div>
         <div className="mt-4 flex items-center gap-4">
           <button
             type="button"
             className={btn.secondary}
-            onClick={() => void saveDifficulty()}
+            onClick={() => void savePracticeSettings()}
             disabled={busy || !changed}
           >
             保存

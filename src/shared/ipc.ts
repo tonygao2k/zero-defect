@@ -124,7 +124,7 @@ export type Api = {
   openReleasePage(): Promise<void>;
 
   getSettings(): Promise<Settings>;
-  saveSettings(input: Settings): Promise<Result<Settings>>;
+  saveSettings(input: Partial<Settings>): Promise<Result<Settings>>;
   /** 只写不读。传空字符串表示清除。 */
   setApiKey(input: { key: string }): Promise<Result<void>>;
   /** 是否已保存 Key,不返回 Key 本身。 */

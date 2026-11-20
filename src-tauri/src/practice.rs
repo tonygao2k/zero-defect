@@ -12,8 +12,6 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
-const ROUND_SIZE: usize = 5;
-
 #[derive(Clone)]
 pub struct Question {
     pub markdown: String,
@@ -156,7 +154,11 @@ struct Assignment {
     count: usize,
 }
 
-fn select_pairs(mut pairs: Vec<Pair>, rechecks: &GuidedRechecks) -> Vec<Assignment> {
+fn select_pairs(
+    mut pairs: Vec<Pair>,
+    rechecks: &GuidedRechecks,
+    round_size: usize,
+) -> Vec<Assignment> {
     pairs.retain(|pair| pair.practiceable(rechecks));
     pairs.sort_by(|left, right| {
         (
@@ -219,7 +221,7 @@ fn select_pairs(mut pairs: Vec<Pair>, rechecks: &GuidedRechecks) -> Vec<Assignme
                 count: 1,
             });
         }
-        if plan.len() == ROUND_SIZE {
+        if plan.len() == round_size {
             return plan;
         }
     }
@@ -231,7 +233,7 @@ fn select_pairs(mut pairs: Vec<Pair>, rechecks: &GuidedRechecks) -> Vec<Assignme
     for index in weak_indices
         .into_iter()
         .cycle()
-        .take(ROUND_SIZE - plan.len())
+        .take(round_size - plan.len())
     {
         plan[index].count += 1;
     }
@@ -258,7 +260,7 @@ pub fn daily_status(
     pairs: &[Pair],
     rechecks: &GuidedRechecks,
 ) -> AppResult<Value> {
-    let plan = select_pairs(pairs.to_vec(), rechecks);
+    let plan = select_pairs(pairs.to_vec(), rechecks, i.settings.practice_question_count);
     let count = |purpose| {
         plan.iter()
             .filter(|entry| entry.purpose == purpose)
@@ -287,7 +289,11 @@ pub async fn start(state: &AppState) -> AppResult<Value> {
             return session(&i, text(&p, "id"));
         }
         let rechecks = mastery::guided_rechecks(&i, today)?;
-        let plan = select_pairs(mastery::pairs_on(&i, today)?, &rechecks);
+        let plan = select_pairs(
+            mastery::pairs_on(&i, today)?,
+            &rechecks,
+            i.settings.practice_question_count,
+        );
         if plan.is_empty() {
             return Err(
                 "现在没有需要练习的内容。先去错题库确认错题,或者等已掌握的知识点到了复习时间再来"
@@ -327,7 +333,11 @@ pub async fn start(state: &AppState) -> AppResult<Value> {
         }
     }
     let i = state.lock()?;
-    let questions = assemble_round(groups, voided_question_keys(&i)?);
+    let questions = assemble_round(
+        groups,
+        voided_question_keys(&i)?,
+        settings.practice_question_count,
+    );
     if questions.is_empty() {
         return Err(first_error.unwrap_or_else(|| "没能生成合格的练习题,请稍后重试".into()));
     }
@@ -340,13 +350,15 @@ pub async fn start(state: &AppState) -> AppResult<Value> {
 fn assemble_round(
     groups: Vec<(Vec<Question>, usize)>,
     mut seen: HashSet<(String, String)>,
+    round_size: usize,
 ) -> Vec<Question> {
     let mut groups = groups
         .into_iter()
         .map(|(group, count)| (group.into_iter(), count))
         .collect::<Vec<_>>();
     let mut questions = Vec::new();
-    for _ in 0..ROUND_SIZE {
+    while questions.len() < round_size {
+        let before = questions.len();
         for (group, remaining) in &mut groups {
             if *remaining == 0 {
                 continue;
@@ -356,7 +368,13 @@ fn assemble_round(
             {
                 questions.push(question);
                 *remaining -= 1;
+                if questions.len() == round_size {
+                    return questions;
+                }
             }
+        }
+        if questions.len() == before {
+            break;
         }
     }
     questions
@@ -748,7 +766,11 @@ mod tests {
                 )
             })
             .collect();
-        let plan = select_pairs(pairs, &rechecks);
+        let small_plan = select_pairs(pairs.clone(), &rechecks, 1);
+        assert_eq!(small_plan.len(), 1);
+        assert_eq!(small_plan[0].pair.streak, 5);
+        assert_eq!(small_plan[0].count, 1);
+        let plan = select_pairs(pairs, &rechecks, 5);
         assert_eq!(
             plan.iter().map(|item| item.pair.streak).collect::<Vec<_>>(),
             [5, 6, 0, 1, 2]
@@ -760,6 +782,13 @@ mod tests {
             2
         );
         assert_eq!(plan.iter().map(|item| item.count).sum::<usize>(), 5);
+    }
+
+    #[test]
+    fn configured_round_size_can_exceed_five() {
+        let plan = select_pairs(vec![pair(0)], &GuidedRechecks::new(), 8);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].count, 8);
     }
 
     #[test]
@@ -782,6 +811,7 @@ mod tests {
                 (vec![sample("10+5", 1), sample("8+7", 1)], 3),
             ],
             HashSet::new(),
+            5,
         );
         assert_eq!(
             questions
@@ -790,6 +820,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["10 + 5", "8+7"]
         );
+        let capped = assemble_round(
+            vec![(vec![sample("10 + 5", 0), sample("8+7", 0)], 2)],
+            HashSet::new(),
+            1,
+        );
+        assert_eq!(capped.len(), 1);
     }
 
     #[test]
@@ -821,7 +857,7 @@ mod tests {
             )
         })
         .collect();
-        let selected = select_pairs(pairs, &rechecks);
+        let selected = select_pairs(pairs, &rechecks, 5);
         assert_eq!(
             selected
                 .iter()
