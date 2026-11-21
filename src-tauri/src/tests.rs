@@ -57,6 +57,345 @@ fn record_variant(i: &state::Inner, label: &str, answer: &str, date: NaiveDate) 
 }
 
 #[test]
+fn weekly_report_uses_saved_local_dates_and_only_valid_first_answers() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    let monday = practice_day(9);
+    let sunday = practice_day(8);
+    let today = practice_day(12);
+    let report = || weekly_report::report_on(&i, &Value::Null, today).unwrap();
+
+    let empty = report();
+    assert_eq!(empty["start"], "2026-03-09");
+    assert_eq!(empty["end"], "2026-03-15");
+    assert_eq!(empty["previousStart"], "2026-03-02");
+    assert_eq!(empty["nextStart"], Value::Null);
+    assert_eq!(empty["topics"], json!([]));
+    for invalid in [json!("2026-03-10"), json!("2026-03-16"), json!(5)] {
+        assert!(weekly_report::report_on(&i, &json!({"weekStart":invalid}), today).is_err());
+    }
+
+    let mistake = mock_draft(&i, &mock_paper(&i));
+    repo::confirm_recommended(&i, &mistake).unwrap();
+    exec(
+        &i.db,
+        "UPDATE mistakes SET confirmed_evidence_at=?1,confirmed_evidence_local_date=?2 WHERE id=?3",
+        &[
+            &db::stamp(practice_time(sunday, 23, 30)),
+            &monday.to_string(),
+            &mistake,
+        ],
+    )
+    .unwrap();
+    record_variant(&i, "计算：7+8=?", "15", sunday);
+    record_variant(&i, "8 + 7 = ?", "15", monday);
+    record_variant(&i, "10+5=?", "", monday);
+    record_variant(&i, "9+6=?", "15", monday);
+    let assisted = record_variant(&i, "11+4=?", "15", monday);
+    exec(
+        &i.db,
+        "UPDATE answer_attempts SET used_hint=1,outcome='unknown' WHERE practice_question_id=?1",
+        &[&text(&assisted["questions"][0], "id")],
+    )
+    .unwrap();
+    let voided = record_variant(&i, "12+3=?", "15", monday);
+    let question = &voided["questions"][0]["id"];
+    question_review::report(&i, &json!({"questionId":question,"reason":"grading"})).unwrap();
+    question_review::resolve(
+        &i,
+        &json!({"questionId":question,"action":"void","note":"测试作废"}),
+    )
+    .unwrap();
+    let active = practice::save_at(
+        &i,
+        &[scheduled_question(&i, "14+1=?")],
+        false,
+        practice_time(monday, 22, 0),
+    )
+    .unwrap();
+    record_variant(&i, "16-1=?", "15", practice_day(13));
+
+    let actual = report();
+    assert_eq!(actual["independentCount"], 1);
+    assert_eq!(actual["independentCorrect"], 1);
+    assert_eq!(actual["recheckCount"], 0);
+    let topic = &actual["topics"][0];
+    assert_eq!(topic["mistakeCount"], 1);
+    assert_eq!(topic["hintCount"], 1);
+    assert_eq!(topic["records"].as_array().unwrap().len(), 3);
+    assert!(topic["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|record| record["date"] == "2026-03-09"));
+    assert!(!actual
+        .to_string()
+        .contains(text(&active["questions"][0], "id")));
+
+    let last = weekly_report::report_on(&i, &json!({"weekStart":"2026-03-02"}), today).unwrap();
+    assert_eq!(last["nextStart"], "2026-03-09");
+    assert_eq!(last["independentCount"], 1);
+    assert_eq!(last["topics"][0]["mistakeCount"], 0);
+    assert_eq!(last["topics"][0]["next"], Value::Null);
+}
+
+#[test]
+fn weekly_report_keeps_historical_rechecks_and_recalculates_voids() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    let sunday = practice_day(8);
+    let monday = practice_day(9);
+    guided_column_application(&i, practice_time(sunday, 19, 0));
+    let calculation = "计算：7+8=?";
+    record_variant(&i, calculation, "15", monday);
+    let report = || weekly_report::report_on(&i, &Value::Null, practice_day(16)).unwrap();
+    let past_week = || {
+        weekly_report::report_on(&i, &json!({"weekStart":"2026-03-09"}), practice_day(16)).unwrap()
+    };
+    assert_eq!(past_week()["recheckCount"], 0);
+
+    let variant = record_variant(
+        &i,
+        "花店上午卖了 9 束花，下午卖了 6 束花，全天卖了多少束花？",
+        "14",
+        monday,
+    );
+    let question = &variant["questions"][0]["id"];
+    let matching = past_week();
+    assert_eq!(matching["recheckCount"], 1);
+    assert_eq!(matching["independentCount"], 2);
+    assert_eq!(matching["independentCorrect"], 1);
+    assert!(matching["topics"][0]["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| record["id"] == *question
+            && record["hintDate"] == "2026-03-08"
+            && record["kind"] == "wrong"));
+
+    let newer = record_variant(
+        &i,
+        "小雨上午买了 8 本练习册，下午又买了 7 本，一共买了多少本练习册？",
+        "14",
+        practice_day(16),
+    );
+    exec(
+        &i.db,
+        "UPDATE practice_questions SET revision_hint_at=?1,revision_hint_local_date=?2 WHERE id=?3",
+        &[
+            &db::stamp(practice_time(practice_day(16), 12, 15)),
+            &"2026-03-16",
+            &text(&newer["questions"][0], "id"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(report()["recheckCount"], 0);
+    assert_eq!(report()["topics"][0]["next"]["kind"], "recheck_later");
+    assert_eq!(past_week()["recheckCount"], 1);
+
+    question_review::report(&i, &json!({"questionId":question,"reason":"grading"})).unwrap();
+    question_review::resolve(
+        &i,
+        &json!({"questionId":question,"action":"void","note":"测试历史周报重算"}),
+    )
+    .unwrap();
+    assert_eq!(past_week()["recheckCount"], 0);
+    assert_eq!(past_week()["independentCount"], 1);
+}
+
+#[test]
+fn weekly_report_keeps_prior_answers_when_a_matching_paper_mistake_is_confirmed() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    let first = mock_draft(&i, &mock_paper(&i));
+    repo::confirm_recommended(&i, &first).unwrap();
+    let paper_mistake = mock_draft(&i, &mock_paper(&i));
+    let week = json!({"weekStart":"2026-03-02"});
+    let report = || weekly_report::report_on(&i, &week, practice_day(9)).unwrap();
+
+    let attempt = record_variant(&i, "计算：7+8=?", "15", practice_day(8));
+    assert_eq!(report()["independentCorrect"], 1);
+    repo::confirm(
+        &i,
+        &json!({
+            "mistakeId": paper_mistake, "questionMarkdown": "8+7=?",
+            "knowledgePointCode":"mul_two_digit", "rootCauseCode":"carry_omission",
+            "correctAnswer":"15", "studentAnswer":"14"
+        }),
+    )
+    .unwrap();
+    exec(&i.db, "UPDATE mistakes SET confirmed_evidence_at=?1,confirmed_evidence_local_date='2026-03-09',updated_at=?1 WHERE id=?2",
+        &[&db::stamp(practice_time(practice_day(9), 9, 0)), &paper_mistake]).unwrap();
+
+    assert_eq!(report()["independentCorrect"], 1);
+    let question = &attempt["questions"][0]["id"];
+    question_review::report(&i, &json!({"questionId":question,"reason":"grading"})).unwrap();
+    question_review::resolve(
+        &i,
+        &json!({"questionId":question,"action":"void","note":"测试作废"}),
+    )
+    .unwrap();
+    assert_eq!(report()["independentCorrect"], 0);
+    question_review::resolve(
+        &i,
+        &json!({"questionId":question,"action":"restore","note":"测试恢复"}),
+    )
+    .unwrap();
+    assert_eq!(report()["independentCorrect"], 1);
+
+    // A paper question that was already present when a new round opened remains excluded.
+    let same_paper = record_variant(&i, "23×14=?", "15", practice_day(9));
+    repo::remove_mistake(&i, &first).unwrap();
+    let current = weekly_report::report_on(&i, &Value::Null, practice_day(9)).unwrap();
+    assert_eq!(current["independentCount"], 0);
+    assert!(!current
+        .to_string()
+        .contains(text(&same_paper["questions"][0], "id")));
+}
+
+#[test]
+fn weekly_report_shows_the_scheduled_recheck_even_in_an_empty_week() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    let sunday = practice_day(8);
+    let monday = practice_day(9);
+    guided_column_application(&i, practice_time(sunday, 19, 0));
+    exec(&i.db, "UPDATE mistakes SET confirmed_evidence_at=?1,confirmed_evidence_local_date='2026-03-08' WHERE status='active'",
+        &[&db::stamp(practice_time(sunday, 18, 0))]).unwrap();
+    let report = |day| weekly_report::report_on(&i, &Value::Null, day).unwrap();
+    assert_eq!(report(sunday)["duePractice"], json!([]));
+
+    let monday_report = report(monday);
+    assert_eq!(monday_report["topics"], json!([]));
+    assert_eq!(monday_report["recheckCount"], 0);
+    assert_eq!(
+        mastery::stats_on(&i, monday).unwrap()["dailyPractice"]["plan"]["recheck"],
+        1
+    );
+    assert_eq!(monday_report["duePractice"].as_array().unwrap().len(), 1);
+    assert_eq!(monday_report["duePractice"][0]["recheck"], true);
+    assert!(!text(&monday_report["duePractice"][0], "point").is_empty());
+    let past = weekly_report::report_on(&i, &json!({"weekStart":"2026-03-02"}), monday).unwrap();
+    assert_eq!(past["duePractice"], json!([]));
+
+    record_variant(
+        &i,
+        "花店上午卖了 9 束花，下午卖了 6 束花，全天卖了多少束花？",
+        "15",
+        monday,
+    );
+    assert_eq!(report(monday)["duePractice"], json!([]));
+    assert_eq!(report(monday)["recheckCount"], 1);
+}
+
+#[test]
+fn weekly_report_preserves_legacy_duplicate_status_after_paper_answer_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("zero-defect.sqlite");
+    {
+        let db = rusqlite::Connection::open(&file).unwrap();
+        db::migrate(&db, None, 9).unwrap();
+        db.execute_batch(
+            "INSERT INTO mistakes(id,question_markdown,student_answer,correct_answer,grade,semester,knowledge_point_id,status,created_at,updated_at,confirmed_evidence_at,confirmed_evidence_local_date)
+             VALUES ('paper-original','8+7=?','13','15',3,1,'add_sub_within_100','active','2026-03-06T10:00:00Z','2026-03-06T12:00:00Z','2026-03-06T12:00:00Z','2026-03-06'),
+                    ('paper-late','9+6=?','13','15',3,1,'add_sub_within_100','active','2026-03-06T10:00:00Z','2026-03-09T12:00:00Z','2026-03-06T12:00:00Z','2026-03-06');
+             INSERT INTO mistake_root_causes(mistake_id,root_cause_id,is_primary)
+             VALUES ('paper-original','carry_omission',1),('paper-late','carry_omission',1);
+             INSERT INTO practice_sessions(id,practice_date,status,created_at)
+             VALUES ('legacy-round','2026-03-08','completed','2026-03-08T12:00:00Z');
+             INSERT INTO practice_questions(id,session_id,root_cause_id,knowledge_point_id,question_markdown,answer_type,correct_answer,difficulty,status,verify_json,created_at)
+             VALUES ('legacy-repeat','legacy-round','carry_omission','add_sub_within_100','计算：7+8=?','number','15',1,'answered','{\"solver\":\"15\"}','2026-03-08T12:00:00Z'),
+                    ('legacy-new','legacy-round','carry_omission','add_sub_within_100','6+9=?','number','15',1,'answered',NULL,'2026-03-08T12:00:00Z'),
+                    ('prior-snapshot','legacy-round','carry_omission','add_sub_within_100','7+8=?','number','15',1,'assigned','{\"matchesOriginalAtDispatch\":false}','2026-03-08T12:00:00Z');
+             INSERT INTO answer_attempts(id,practice_question_id,root_cause_id,knowledge_point_id,submitted_answer,is_correct,created_at,outcome,local_date)
+             VALUES ('repeat-answer','legacy-repeat','carry_omission','add_sub_within_100','15',1,'2026-03-08T12:15:00Z','correct','2026-03-08'),
+                    ('new-answer','legacy-new','carry_omission','add_sub_within_100','15',1,'2026-03-08T12:15:00Z','correct','2026-03-08');",
+        )
+        .unwrap();
+    }
+    let state = AppState::new(dir.path().to_owned(), vec![]).unwrap();
+    let i = state.lock().unwrap();
+    let original_since = || {
+        one(
+            &i.db,
+            "SELECT original_question_since FROM mistakes WHERE id='paper-original'",
+            &[],
+        )
+        .unwrap()
+        .unwrap()["original_question_since"]
+            .clone()
+    };
+    let report = || {
+        weekly_report::report_on(&i, &json!({"weekStart":"2026-03-02"}), practice_day(9)).unwrap()
+    };
+    assert_eq!(report()["independentCorrect"], 1);
+    let mut edited = json!({
+        "mistakeId":"paper-original","questionMarkdown":"8+7=?",
+        "rootCauseCode":"carry_omission","knowledgePointCode":"add_sub_within_100",
+        "studentAnswer":"14","correctAnswer":"15"
+    });
+    repo::confirm(&i, &edited).unwrap();
+    assert_eq!(report()["independentCorrect"], 1);
+    assert_eq!(original_since(), "2026-03-06T12:00:00Z");
+
+    edited["questionMarkdown"] = json!("12+3=?");
+    repo::confirm(&i, &edited).unwrap();
+    assert_ne!(original_since(), "2026-03-06T12:00:00Z");
+    assert_eq!(report()["independentCorrect"], 1);
+    repo::remove_mistake(&i, "paper-original").unwrap();
+    assert_eq!(report()["independentCorrect"], 1);
+    assert_eq!(
+        query(
+            &i.db,
+            "SELECT id,matches_original_at_dispatch FROM practice_questions ORDER BY id",
+            &[]
+        )
+        .unwrap(),
+        json!([
+            {"id":"legacy-new","matches_original_at_dispatch":0},
+            {"id":"legacy-repeat","matches_original_at_dispatch":1},
+            {"id":"prior-snapshot","matches_original_at_dispatch":0}
+        ])
+        .as_array()
+        .unwrap()
+        .clone()
+    );
+    assert_eq!(
+        one(
+            &i.db,
+            "SELECT verify_json FROM practice_questions WHERE id='legacy-repeat'",
+            &[]
+        )
+        .unwrap()
+        .unwrap()["verify_json"],
+        "{\"solver\":\"15\"}"
+    );
+}
+
+#[test]
+fn weekly_report_does_not_recommend_a_recheck_for_an_unknown_question_type() {
+    let (_dir, state) = setup();
+    let i = state.lock().unwrap();
+    confirm_column_mistake(&i);
+    let monday = practice_day(9);
+    let tuesday = practice_day(10);
+    let original = record_variant(&i, "已知一些条件，请猜一猜。", "14", monday);
+    exec(
+        &i.db,
+        "UPDATE practice_questions SET verify_json=NULL,revision_hint_at=?1,revision_hint_local_date='2026-03-09' WHERE session_id=?2",
+        &[&db::stamp(practice_time(monday, 18, 0)), &text(&original, "sessionId")],
+    ).unwrap();
+    for (day, status) in [(monday, "waiting"), (tuesday, "due")] {
+        let report = weekly_report::report_on(&i, &Value::Null, day).unwrap();
+        let stats = mastery::stats_on(&i, day).unwrap();
+        assert_eq!(stats["crossDayRecheck"][status], 1);
+        assert_eq!(stats["dailyPractice"]["plan"]["recheck"], 0);
+        assert_eq!(report["duePractice"], json!([]));
+        assert_eq!(report["topics"][0]["next"]["kind"], "reinforce");
+    }
+}
+
+#[test]
 fn daily_session_survives_restart_and_midnight_without_creating_duplicate_evidence() {
     let (dir, state) = setup();
     let date = practice_day(6);
@@ -433,10 +772,10 @@ fn mock_draft(i: &state::Inner, pid: &str) -> String {
     .to_owned()
 }
 #[test]
-fn fresh_database_has_all_nine_versions_and_taxonomy() {
+fn fresh_database_has_all_ten_versions_and_taxonomy() {
     let (_d, s) = setup();
     let i = s.lock().unwrap();
-    assert_eq!(count(&i, "schema_migrations"), 9);
+    assert_eq!(count(&i, "schema_migrations"), 10);
     let t = repo::taxonomy(&i).unwrap();
     assert!(t["causes"]
         .as_array()

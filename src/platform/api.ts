@@ -63,6 +63,7 @@ export const api: Api = {
     call('getTaxonomy', (args as unknown[])[0]),
   getHomeStats: (...args: Parameters<Api['getHomeStats']>) =>
     call('getHomeStats', (args as unknown[])[0]),
+  getWeeklyReport: (input) => call('getWeeklyReport', input),
   startPractice: (...args: Parameters<Api['startPractice']>) =>
     call('startPractice', (args as unknown[])[0]),
   finishPracticeStartSample: (input) =>

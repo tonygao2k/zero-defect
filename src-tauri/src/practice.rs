@@ -12,7 +12,10 @@ use crate::{
 use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use regex::Regex;
 use serde_json::{json, Value};
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 use tokio::task::JoinSet;
 
 #[derive(Clone)]
@@ -159,8 +162,8 @@ enum Purpose {
 }
 
 #[derive(Clone)]
-struct Assignment {
-    pair: Pair,
+pub(crate) struct Assignment {
+    pub pair: Pair,
     purpose: Purpose,
     count: usize,
 }
@@ -195,7 +198,7 @@ struct GenerationSlot {
     recheck: Option<RecheckRequirement>,
 }
 
-fn select_pairs(
+pub(crate) fn select_pairs(
     mut pairs: Vec<Pair>,
     rechecks: &GuidedRechecks,
     round_size: usize,
@@ -650,7 +653,7 @@ fn assemble_round(
 
 type VariantKey = (String, String);
 
-fn variant_key(markdown: &str, figure: &Value) -> VariantKey {
+pub(crate) fn variant_key(markdown: &str, figure: &Value) -> VariantKey {
     (
         practice_templates::canonical_prompt(markdown),
         figure::validate(figure).unwrap_or(Value::Null).to_string(),
@@ -688,6 +691,17 @@ fn voided_question_keys(i: &Inner) -> AppResult<HashSet<VariantKey>> {
         .iter().map(|row| variant_key(text(row, "q"), &parsed(row, "figure_json"))).collect())
 }
 
+fn original_questions(i: &Inner, cause: &str, point: &str) -> AppResult<Vec<Value>> {
+    query(
+        &i.db,
+        "SELECT m.question_markdown q
+         FROM mistakes m JOIN mistake_root_causes mrc
+         ON mrc.mistake_id=m.id AND mrc.is_primary=1
+         WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2",
+        &[&cause, &point],
+    )
+}
+
 struct QuestionHistory {
     prior: HashSet<VariantKey>,
     originals: HashSet<String>,
@@ -700,13 +714,7 @@ impl QuestionHistory {
             "SELECT question_markdown q,figure_json FROM practice_questions WHERE root_cause_id=?1 AND knowledge_point_id=?2",
             &[&pair.cause, &pair.point],
         )?;
-        let originals = query(
-            &i.db,
-            "SELECT m.question_markdown q FROM mistakes m JOIN mistake_root_causes mrc
-             ON mrc.mistake_id=m.id AND mrc.is_primary=1
-             WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2",
-            &[&pair.cause, &pair.point],
-        )?;
+        let originals = original_questions(i, &pair.cause, &pair.point)?;
         Ok(Self {
             prior: history
                 .iter()
@@ -899,10 +907,6 @@ async fn verify_question(
     question.solver = answer;
     Ok(Some(question))
 }
-pub(crate) fn question_key(markdown: &str, figure: &Value) -> (String, String) {
-    let figure = figure::validate(figure).unwrap_or(Value::Null);
-    (markdown.split_whitespace().collect(), figure.to_string())
-}
 #[cfg(test)]
 pub fn save(i: &Inner, questions: &[Question]) -> AppResult<Value> {
     save_at(i, questions, false, Utc::now())
@@ -919,9 +923,21 @@ pub(crate) fn save_at(
     let today = now.with_timezone(&Local).date_naive().to_string();
     transaction(&i.db, || {
         exec(&i.db,"INSERT INTO practice_sessions(id,practice_date,status,created_at,is_daily) VALUES (?1,?2,'pending',?3,?4)",&[&session_id,&today,&t,&daily])?;
+        let mut originals = HashMap::new();
         for (pos, q) in questions.iter().enumerate() {
+            let pair = (q.pair.cause.as_str(), q.pair.point.as_str());
+            let original_keys = match originals.entry(pair) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+                    original_questions(i, pair.0, pair.1)?
+                        .iter()
+                        .map(|row| practice_templates::canonical_prompt(text(row, "q")))
+                        .collect::<HashSet<_>>(),
+                ),
+            };
+            let matches_original = original_keys.contains(&q.variant_key().0);
             let source=one(&i.db,"SELECT m.id FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id=m.id AND mrc.is_primary=1 WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2 ORDER BY m.updated_at DESC LIMIT 1",&[&q.pair.cause,&q.pair.point])?;
-            exec(&i.db,"INSERT INTO practice_questions(id,session_id,position,root_cause_id,knowledge_point_id,source_mistake_id,question_markdown,answer_type,options_json,correct_answer,answer_unit,solution_markdown,figure_json,difficulty,status,verify_json,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'assigned',?15,?16)",&[&db::id(),&session_id,&(pos as i64),&q.pair.cause,&q.pair.point,&source.as_ref().and_then(|s|s["id"].as_str()),&q.markdown,&q.kind,&json!(q.options).to_string(),&q.correct,&q.unit,&q.solution,&if q.figure.is_null(){None}else{Some(q.figure.to_string())},&q.level.as_ref().map_or(1, PracticeDifficulty::code),&q.verification().to_string(),&t])?;
+            exec(&i.db,"INSERT INTO practice_questions(id,session_id,position,root_cause_id,knowledge_point_id,source_mistake_id,question_markdown,answer_type,options_json,correct_answer,answer_unit,solution_markdown,figure_json,difficulty,status,verify_json,created_at,matches_original_at_dispatch) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'assigned',?15,?16,?17)",&[&db::id(),&session_id,&(pos as i64),&q.pair.cause,&q.pair.point,&source.as_ref().and_then(|s|s["id"].as_str()),&q.markdown,&q.kind,&json!(q.options).to_string(),&q.correct,&q.unit,&q.solution,&if q.figure.is_null(){None}else{Some(q.figure.to_string())},&q.level.as_ref().map_or(1, PracticeDifficulty::code),&q.verification().to_string(),&t,&matches_original])?;
         }
         let ai_count = questions
             .iter()
@@ -1117,7 +1133,7 @@ pub fn abandon(i: &Inner, input: &Value) -> AppResult<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mastery::GuidedRecheck;
+    use crate::mastery::{GuidedRecheck, RecheckAnswer};
 
     fn pair(streak: usize) -> Pair {
         Pair {
@@ -1149,7 +1165,7 @@ mod tests {
                     GuidedRecheck {
                         since: since.into(),
                         correct: None,
-                        cross_day_correct: None,
+                        cross_day: None,
                         due: true,
                         requirement: RecheckRequirement {
                             structure: Structure::Calculation,
@@ -1244,7 +1260,11 @@ mod tests {
                 GuidedRecheck {
                     since: since.into(),
                     correct,
-                    cross_day_correct: correct,
+                    cross_day: correct.map(|correct| RecheckAnswer {
+                        question_id: String::new(),
+                        date: "2026-11-05".parse().unwrap(),
+                        correct,
+                    }),
                     due: true,
                     requirement: RecheckRequirement {
                         structure: Structure::Calculation,

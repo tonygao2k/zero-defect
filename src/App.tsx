@@ -4,6 +4,7 @@ import logoText from './assets/brand/logo_text.png';
 import {
   BookIcon,
   CameraIcon,
+  ChartIcon,
   GearIcon,
   HomeIcon,
   StarIcon,
@@ -13,14 +14,16 @@ import { LibraryPage } from './pages/LibraryPage';
 import { PracticePage } from './pages/PracticePage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UploadPage } from './pages/UploadPage';
+import { WeeklyReportPage } from './pages/WeeklyReportPage';
 import { UpdateNotice } from './components/UpdateNotice';
 
-type PageId = 'practice' | 'upload' | 'library' | 'settings';
+type PageId = 'practice' | 'upload' | 'library' | 'weeklyReport' | 'settings';
 
 const NAV: { id: PageId; label: string; Icon: typeof HomeIcon }[] = [
   { id: 'practice', label: '智能练习', Icon: StarIcon },
   { id: 'upload', label: '上传错题', Icon: CameraIcon },
   { id: 'library', label: '错题库', Icon: BookIcon },
+  { id: 'weeklyReport', label: '学习周报', Icon: ChartIcon },
 ];
 
 function NavButton(props: {
@@ -119,6 +122,9 @@ export function App() {
           <UploadPage onOpenLibrary={() => setPage('library')} />
         </div>
         {page === 'library' && <LibraryPage />}
+        {page === 'weeklyReport' && (
+          <WeeklyReportPage onPractice={() => setPage('practice')} />
+        )}
         {page === 'settings' && <SettingsPage />}
       </main>
       <UpdateNotice />

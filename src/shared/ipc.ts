@@ -22,6 +22,7 @@ import type {
 } from './practice';
 import type { HomeStats } from './stats';
 import type { Settings } from './settings';
+import type { WeeklyReport } from './weekly-report';
 
 /** IPC 通道名,主进程和预加载脚本共用,避免两边拼写不一致。 */
 export const IPC = {
@@ -51,6 +52,7 @@ export const IPC = {
   listMistakes: 'mistake:list',
   getTaxonomy: 'taxonomy:get',
   getHomeStats: 'home:stats',
+  getWeeklyReport: 'report:weekly',
   startPractice: 'practice:start',
   finishPracticeStartSample: 'practice:finishStartSample',
   getPracticeStartMetrics: 'practice:startMetrics',
@@ -168,6 +170,7 @@ export type Api = {
   getTaxonomy(): Promise<Taxonomy>;
 
   getHomeStats(): Promise<HomeStats>;
+  getWeeklyReport(input?: { weekStart: string }): Promise<Result<WeeklyReport>>;
   startPractice(input?: {
     requestId: string;
   }): Promise<Result<PracticeSession>>;

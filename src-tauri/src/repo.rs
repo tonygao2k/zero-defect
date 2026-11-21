@@ -1,6 +1,7 @@
 use crate::{
     answers,
     db::{self, exec, one, parsed, query, text, transaction, AppResult},
+    practice_templates::canonical_prompt,
     state::{data_url, Inner},
 };
 use serde_json::{json, Value};
@@ -163,7 +164,11 @@ pub fn confirm(i: &Inner, input: &Value) -> AppResult<Value> {
     let work = text(input, "studentWorkMarkdown").trim();
     let row = one(
         &i.db,
-        "SELECT incomplete,confirmed_evidence_at,confirmed_evidence_local_date FROM mistakes WHERE id=?1",
+        "SELECT m.incomplete,m.confirmed_evidence_at,m.confirmed_evidence_local_date,m.status,
+                m.question_markdown,m.knowledge_point_id,m.original_question_since,
+                (SELECT c.root_cause_id FROM mistake_root_causes c
+                 WHERE c.mistake_id=m.id AND c.is_primary=1) root_cause_id
+         FROM mistakes m WHERE m.id=?1",
         &[&id],
     )?
     .ok_or("找不到这道错题")?;
@@ -197,8 +202,17 @@ pub fn confirm(i: &Inner, input: &Value) -> AppResult<Value> {
         &[&kp],
     )?
     .ok_or("知识点不存在,请重新选择")?;
+    let same_original = row["status"] == "active"
+        && row["knowledge_point_id"] == kp["id"]
+        && row["root_cause_id"] == cause["id"]
+        && canonical_prompt(text(&row, "question_markdown")) == canonical_prompt(q);
+    let original_since = if same_original {
+        row["original_question_since"].as_str().unwrap_or(&now)
+    } else {
+        &now
+    };
     transaction(&i.db, || {
-        exec(&i.db,"UPDATE mistakes SET question_markdown=?1,student_answer=?2,student_work_markdown=?3,correct_answer=?4,knowledge_point_id=?5,status='active',updated_at=?6,confirmed_evidence_at=?7,confirmed_evidence_local_date=?8,incomplete=0 WHERE id=?9",&[&q,&student,&work,&correct,&text(&kp,"id"),&now,&evidence_at,&evidence_day,&id])?;
+        exec(&i.db,"UPDATE mistakes SET question_markdown=?1,student_answer=?2,student_work_markdown=?3,correct_answer=?4,knowledge_point_id=?5,status='active',updated_at=?6,confirmed_evidence_at=?7,confirmed_evidence_local_date=?8,original_question_since=?9,incomplete=0 WHERE id=?10",&[&q,&student,&work,&correct,&text(&kp,"id"),&now,&evidence_at,&evidence_day,&original_since,&id])?;
         exec(
             &i.db,
             "UPDATE mistake_root_causes SET is_primary=0 WHERE mistake_id=?1",

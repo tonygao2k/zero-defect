@@ -1,6 +1,6 @@
 use crate::{
     db::{self, one, parsed, query, text, AppResult},
-    practice::question_key,
+    practice::variant_key,
     practice_structure::{RecheckRequirement, Structure},
     schedule::Projection,
     state::{Inner, PracticeDifficulty},
@@ -24,11 +24,7 @@ impl Pair {
     fn guidance<'a>(&self, rechecks: &'a GuidedRechecks) -> Option<&'a GuidedRecheck> {
         rechecks
             .get(&(self.cause.clone(), self.point.clone()))
-            .filter(|recheck| {
-                recheck.cross_day_correct.is_none()
-                    && recheck.due
-                    && recheck.requirement.structure != Structure::Unknown
-            })
+            .filter(|recheck| recheck.due && recheck.awaiting_compatible_answer())
     }
 
     pub fn pending_guidance<'a>(&self, rechecks: &'a GuidedRechecks) -> Option<&'a str> {
@@ -54,46 +50,94 @@ impl Pair {
 pub struct GuidedRecheck {
     pub since: String,
     pub correct: Option<bool>,
-    pub cross_day_correct: Option<bool>,
+    pub cross_day: Option<RecheckAnswer>,
     pub due: bool,
     pub requirement: RecheckRequirement,
+}
+
+impl GuidedRecheck {
+    pub fn awaiting_compatible_answer(&self) -> bool {
+        self.cross_day.is_none() && self.requirement.structure != Structure::Unknown
+    }
+}
+
+pub struct RecheckAnswer {
+    pub question_id: String,
+    pub date: NaiveDate,
+    pub correct: bool,
+}
+
+pub struct GuidanceEvidence {
+    pub cause: String,
+    pub point: String,
+    pub date: NaiveDate,
+    pub recheck: GuidedRecheck,
 }
 
 pub type GuidedRechecks = HashMap<(String, String), GuidedRecheck>;
 
 pub fn guided_rechecks(i: &Inner, today: NaiveDate) -> AppResult<GuidedRechecks> {
+    Ok(project_guidance(i, today, None)?
+        .into_iter()
+        .map(|hint| ((hint.cause, hint.point), hint.recheck))
+        .collect())
+}
+
+pub fn weekly_guidance(
+    i: &Inner,
+    start: NaiveDate,
+    through: NaiveDate,
+) -> AppResult<Vec<GuidanceEvidence>> {
+    project_guidance(i, through, Some(start))
+}
+
+fn project_guidance(
+    i: &Inner,
+    through: NaiveDate,
+    week_start: Option<NaiveDate>,
+) -> AppResult<Vec<GuidanceEvidence>> {
     let rows = query(
         &i.db,
-        "WITH guidance AS (
-            SELECT q.root_cause_id,q.knowledge_point_id,q.session_id,q.revision_hint_at,q.difficulty,
-                q.question_markdown,q.figure_json,q.verify_json,
-                COALESCE(q.revision_hint_local_date,date(q.revision_hint_at,'localtime')) hint_day,ROW_NUMBER() OVER (
-                PARTITION BY q.root_cause_id,q.knowledge_point_id ORDER BY q.revision_hint_at DESC,q.question_order DESC
-            ) newest
-            FROM valid_practice_questions q WHERE q.revision_hint_at IS NOT NULL
+        "WITH hints AS (
+            SELECT q.id,q.root_cause_id,q.knowledge_point_id,q.session_id,q.revision_hint_at,q.difficulty,
+                q.question_markdown,q.figure_json,q.verify_json,q.question_order,
+                COALESCE(q.revision_hint_local_date,date(q.revision_hint_at,'localtime')) hint_day
+            FROM valid_practice_questions q JOIN practice_sessions s ON s.id=q.session_id
+            WHERE q.revision_hint_at IS NOT NULL AND s.status IN ('submitted','completed')
+         ), guidance AS (
+            SELECT hints.*,
+                LEAD(revision_hint_at) OVER timeline next_hint_at
+            FROM hints WHERE hint_day IS NOT NULL AND (?2 IS NULL OR hint_day<=?1)
+            WINDOW timeline AS (PARTITION BY root_cause_id,knowledge_point_id
+                ORDER BY julianday(revision_hint_at),question_order)
          ), candidates AS (
-            SELECT a.*,q.rowid question_order,q.difficulty,q.question_markdown,q.figure_json,q.verify_json
+            SELECT a.*,q.rowid question_order,q.difficulty,q.question_markdown,q.figure_json,q.verify_json,
+                COALESCE(a.local_date,date(a.created_at,'localtime')) answer_day
             FROM independent_practice_evidence a JOIN practice_questions q ON q.id=a.practice_question_id
+            JOIN practice_sessions s ON s.id=a.session_id WHERE s.status IN ('submitted','completed')
          )
-         SELECT g.root_cause_id cause,g.knowledge_point_id point,g.revision_hint_at since,g.hint_day<?1 due,
+         SELECT g.id hint_question_id,g.root_cause_id cause,g.knowledge_point_id point,g.revision_hint_at since,g.hint_day<?1 due,
                    g.hint_day,g.difficulty,g.question_markdown,g.figure_json,g.verify_json,
-                   a.outcome='correct' correct,a.question_order,
+                   a.outcome='correct' correct,a.question_order,a.practice_question_id answer_question_id,
                    a.question_markdown answer_markdown,a.figure_json answer_figure_json,a.verify_json answer_verify_json,
-                   a.difficulty answer_difficulty,COALESCE(a.local_date,date(a.created_at,'localtime')) answer_day
+                   a.difficulty answer_difficulty,a.answer_day
             FROM guidance g LEFT JOIN candidates a
               ON a.root_cause_id=g.root_cause_id AND a.knowledge_point_id=g.knowledge_point_id
               AND julianday(a.created_at)>=julianday(g.revision_hint_at) AND a.session_id<>g.session_id
+              AND (g.next_hint_at IS NULL OR julianday(a.created_at)<julianday(g.next_hint_at))
+              AND (?2 IS NULL OR a.answer_day<=?1)
               AND NOT EXISTS (
                   SELECT 1 FROM practice_questions seen WHERE seen.session_id=g.session_id
                     AND seen.question_markdown=a.question_markdown
                     AND COALESCE(seen.figure_json,'null')=COALESCE(a.figure_json,'null')
               )
-            WHERE g.newest=1 ORDER BY cause,point,julianday(a.created_at),a.attempt_order",
-        &[&today.to_string()],
+            WHERE g.next_hint_at IS NULL OR ?2 IS NOT NULL
+            ORDER BY cause,point,julianday(g.revision_hint_at),g.question_order,julianday(a.created_at),a.attempt_order",
+        &[&through.to_string(), &week_start.map(|date| date.to_string())],
     )?;
-    let mut result = HashMap::new();
-    for group in rows
-        .chunk_by(|left, right| left["cause"] == right["cause"] && left["point"] == right["point"])
+    let mut result = Vec::new();
+    let mut variants = HashMap::new();
+    for group in rows.chunk_by(|left, right| left["hint_question_id"] == right["hint_question_id"])
     {
         let first = &group[0];
         let cause = text(first, "cause");
@@ -123,60 +167,78 @@ pub fn guided_rechecks(i: &Inner, today: NaiveDate) -> AppResult<GuidedRechecks>
                 .then(|| row["correct"] == 1)
         });
         let mut cross_day = candidates
-            .filter(|(row, structure)| {
-                row["answer_difficulty"]
+            .filter_map(|(row, structure)| {
+                let date = text(row, "answer_day").parse::<NaiveDate>().ok()?;
+                (row["answer_difficulty"]
                     .as_i64()
-                    .is_some_and(|level| requirement.accepts(*structure, level))
+                    .is_some_and(|level| requirement.accepts(structure, level))
                     && text(row, "answer_day") > text(row, "hint_day")
-                    && !text(row, "hint_day").is_empty()
+                    && !text(row, "hint_day").is_empty())
+                .then_some((row, date))
             })
-            .map(|(row, _)| row)
             .peekable();
-        let cross_day_correct = if cross_day.peek().is_some() {
-            let variants = variant_orders(i, cause, point)?;
+        let cross_day = if cross_day.peek().is_some() {
+            let orders = match variants.entry((cause, point)) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(variant_orders(i, cause, point)?)
+                }
+            };
             cross_day
-                .find(|row| {
+                .find(|(row, _)| {
                     row["question_order"]
                         .as_i64()
-                        .is_some_and(|order| variants.contains(&order))
+                        .is_some_and(|order| orders.contains(&order))
                 })
-                .map(|row| row["correct"] == 1)
+                .map(|(row, date)| RecheckAnswer {
+                    question_id: text(row, "answer_question_id").into(),
+                    date,
+                    correct: row["correct"] == 1,
+                })
         } else {
             None
         };
-        result.insert(
-            (cause.into(), point.into()),
-            GuidedRecheck {
+        let Ok(date) = text(first, "hint_day").parse() else {
+            continue;
+        };
+        if week_start.is_some_and(|start| {
+            date < start && cross_day.as_ref().is_none_or(|answer| answer.date < start)
+        }) {
+            continue;
+        }
+        result.push(GuidanceEvidence {
+            cause: cause.into(),
+            point: point.into(),
+            date,
+            recheck: GuidedRecheck {
                 since: text(first, "since").into(),
                 correct,
-                cross_day_correct,
+                cross_day,
                 due: first["due"] == 1,
                 requirement,
             },
-        );
+        });
     }
     Ok(result)
 }
 
-fn variant_orders(i: &Inner, cause: &str, point: &str) -> AppResult<HashSet<i64>> {
-    let originals = query(&i.db,"SELECT m.question_markdown FROM mistakes m JOIN mistake_root_causes cause ON cause.mistake_id=m.id AND cause.is_primary=1 WHERE cause.root_cause_id=?1 AND m.knowledge_point_id=?2 AND m.status='active'",&[&cause,&point])?;
-    let original_keys = originals
-        .iter()
-        .map(|row| question_key(text(row, "question_markdown"), &Value::Null).0)
-        .collect::<HashSet<_>>();
-    let history = query(&i.db,"SELECT rowid question_order,question_markdown,figure_json FROM practice_questions WHERE root_cause_id=?1 AND knowledge_point_id=?2 ORDER BY rowid",&[&cause,&point])?;
+pub fn variant_orders(i: &Inner, cause: &str, point: &str) -> AppResult<HashSet<i64>> {
+    let history = query(
+        &i.db,
+        "SELECT rowid question_order,question_markdown,figure_json FROM practice_questions
+         WHERE root_cause_id=?1 AND knowledge_point_id=?2 AND matches_original_at_dispatch=0
+         ORDER BY rowid",
+        &[&cause, &point],
+    )?;
     let mut keys = HashSet::new();
-    Ok(history
-        .iter()
-        .filter_map(|row| {
-            let key = question_key(text(row, "question_markdown"), &parsed(row, "figure_json"));
-            if original_keys.contains(&key.0) || !keys.insert(key) {
-                None
-            } else {
-                row["question_order"].as_i64()
-            }
-        })
-        .collect())
+    let mut orders = HashSet::new();
+    for row in &history {
+        let key = variant_key(text(row, "question_markdown"), &parsed(row, "figure_json"));
+        if keys.insert(key) {
+            orders.extend(row["question_order"].as_i64());
+        }
+    }
+    Ok(orders)
 }
 #[cfg(test)]
 pub fn pairs(i: &Inner) -> AppResult<Vec<Pair>> {
@@ -307,10 +369,10 @@ pub fn stats_on(i: &Inner, today: NaiveDate) -> AppResult<Value> {
         "dailyPractice":daily,
         "unsureRecheckPending":pairs.iter().filter(|p|p.unsure_due).count(),
         "crossDayRecheck":{
-            "waiting":guided.iter().filter(|item|item.cross_day_correct.is_none() && !item.due).count(),
-            "due":guided.iter().filter(|item|item.cross_day_correct.is_none() && item.due).count(),
-            "completed":guided.iter().filter(|item|item.cross_day_correct.is_some()).count(),
-            "correct":guided.iter().filter(|item|item.cross_day_correct==Some(true)).count()
+            "waiting":guided.iter().filter(|item|item.cross_day.is_none() && !item.due).count(),
+            "due":guided.iter().filter(|item|item.cross_day.is_none() && item.due).count(),
+            "completed":guided.iter().filter(|item|item.cross_day.is_some()).count(),
+            "correct":guided.iter().filter(|item|item.cross_day.as_ref().is_some_and(|answer| answer.correct)).count()
         },
         "guidedRecheck":{
             "pending":guided.iter().filter(|item|item.correct.is_none()).count(),

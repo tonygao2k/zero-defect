@@ -13,6 +13,7 @@ mod repo;
 mod revision;
 mod schedule;
 mod state;
+mod weekly_report;
 
 use db::{exec, one, text, transaction, AppResult};
 use serde_json::{json, Value};
@@ -37,6 +38,7 @@ const WRAPPED: &[&str] = &[
     "confirmMistake",
     "confirmRecommended",
     "deleteMistake",
+    "getWeeklyReport",
     "startPractice",
     "submitPractice",
     "getPracticeResult",
@@ -155,6 +157,7 @@ fn dispatch(state: &AppState, method: &str, input: &Value) -> AppResult<Value> {
         "listMistakes" => repo::mistakes(&i, input),
         "getTaxonomy" => repo::taxonomy(&i),
         "getHomeStats" => mastery::stats(&i),
+        "getWeeklyReport" => weekly_report::get(&i, input),
         "finishPracticeStartSample" => practice_metrics::finish(&i, input),
         "getPracticeStartMetrics" => practice_metrics::summary(&i),
         "submitPractice" => practice::submit(&i, input),

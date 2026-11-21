@@ -1,15 +1,16 @@
-use crate::answers;
+use crate::{answers, practice_templates::canonical_prompt};
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use rusqlite::{params, types::ValueRef, Connection, ToSql};
 use serde_json::{json, Map, Value};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 pub type AppResult<T> = Result<T, String>;
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 pub fn now() -> String {
     stamp(Utc::now())
@@ -196,6 +197,11 @@ pub fn migrate(db: &Connection, file: Option<&Path>, target: i64) -> AppResult<(
                 9 => db
                     .execute_batch(include_str!("../assets/v9.sql"))
                     .map_err(err)?,
+                10 => {
+                    db.execute_batch(include_str!("../assets/v10.sql"))
+                        .map_err(err)?;
+                    backfill_original_matches(db)?;
+                }
                 _ => return Err("不支持的数据库版本".into()),
             }
             if !query(db, "PRAGMA foreign_key_check", &[])?.is_empty() {
@@ -238,6 +244,59 @@ fn backfill_mistake_evidence(db: &Connection) -> AppResult<()> {
     }
     Ok(())
 }
+
+fn backfill_original_matches(db: &Connection) -> AppResult<()> {
+    let originals = query(
+        db,
+        "SELECT m.question_markdown,m.knowledge_point_id point,c.root_cause_id cause,m.original_question_since
+         FROM mistakes m JOIN mistake_root_causes c ON c.mistake_id=m.id AND c.is_primary=1
+         WHERE m.original_question_since IS NOT NULL",
+        &[],
+    )?;
+    let mut known = HashMap::new();
+    for row in &originals {
+        if let Ok(since) = DateTime::parse_from_rfc3339(text(row, "original_question_since")) {
+            known
+                .entry((
+                    text(row, "cause"),
+                    text(row, "point"),
+                    canonical_prompt(text(row, "question_markdown")),
+                ))
+                .and_modify(|earliest| *earliest = since.min(*earliest))
+                .or_insert(since);
+        }
+    }
+    let questions = query(
+        db,
+        "SELECT q.id,q.question_markdown,q.root_cause_id cause,q.knowledge_point_id point,
+                q.verify_json,s.created_at dispatched_at
+         FROM practice_questions q LEFT JOIN practice_sessions s ON s.id=q.session_id",
+        &[],
+    )?;
+    let mut update = db
+        .prepare("UPDATE practice_questions SET matches_original_at_dispatch=1 WHERE id=?1")
+        .map_err(err)?;
+    for row in &questions {
+        let matched = parsed(row, "verify_json")["matchesOriginalAtDispatch"]
+            .as_bool()
+            .unwrap_or_else(|| {
+                let key = (
+                    text(row, "cause"),
+                    text(row, "point"),
+                    canonical_prompt(text(row, "question_markdown")),
+                );
+                known.get(&key).is_some_and(|since| {
+                    DateTime::parse_from_rfc3339(text(row, "dispatched_at"))
+                        .is_ok_and(|dispatch| *since <= dispatch)
+                })
+            });
+        if matched {
+            update.execute([text(row, "id")]).map_err(err)?;
+        }
+    }
+    Ok(())
+}
+
 fn seed(db: &Connection) -> AppResult<()> {
     let data: Value = serde_json::from_str(include_str!("../assets/seeds.json")).map_err(err)?;
     for c in data["ROOT_CAUSE_SEEDS"].as_array().unwrap() {
