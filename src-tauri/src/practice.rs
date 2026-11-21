@@ -4,13 +4,16 @@ use crate::{
     db::{self, exec, one, parsed, query, text, transaction, AppResult},
     figure,
     mastery::{self, GuidedRechecks, Pair},
+    practice_structure::{RecheckRequirement, Structure},
+    practice_templates::{self, Metadata},
     repo, revision,
-    state::{AppState, Inner, PracticeDifficulty},
+    state::{AppState, Inner, PracticeDifficulty, Settings},
 };
 use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use regex::Regex;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
+use tokio::task::JoinSet;
 
 #[derive(Clone)]
 pub struct Question {
@@ -24,6 +27,7 @@ pub struct Question {
     pub solver: String,
     pub pair: Pair,
     pub level: Option<PracticeDifficulty>,
+    pub template: Option<Metadata>,
 }
 fn first_number(s: &str) -> Option<i64> {
     Regex::new(r"-?\d+")
@@ -76,6 +80,7 @@ pub fn parse_questions(value: &Value, pair: &Pair) -> Vec<Question> {
             solver: String::new(),
             pair: pair.clone(),
             level: None,
+            template: None,
         };
         if kind == "choice" {
             let options = q["options"]
@@ -89,6 +94,11 @@ pub fn parse_questions(value: &Value, pair: &Pair) -> Vec<Question> {
             };
             if options.len() != 4
                 || options.iter().any(String::is_empty)
+                || options.iter().enumerate().any(|(index, option)| {
+                    options[..index]
+                        .iter()
+                        .any(|other| answers::check("number", option, other, ""))
+                })
                 || !('A'..='D').contains(&letter)
             {
                 continue;
@@ -148,10 +158,41 @@ enum Purpose {
     Reinforcement,
 }
 
+#[derive(Clone)]
 struct Assignment {
     pair: Pair,
     purpose: Purpose,
     count: usize,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Curriculum {
+    grade: i64,
+    semester: i64,
+    id: String,
+}
+
+impl From<&Settings> for Curriculum {
+    fn from(settings: &Settings) -> Self {
+        Self {
+            grade: settings.grade,
+            semester: settings.semester,
+            id: settings.curriculum_id.clone(),
+        }
+    }
+}
+
+pub(crate) struct PreparedBatch {
+    curriculum: Curriculum,
+    credential_hash: String,
+    questions: Vec<Question>,
+}
+
+#[derive(Clone)]
+struct GenerationSlot {
+    assignment: Assignment,
+    difficulty: PracticeDifficulty,
+    recheck: Option<RecheckRequirement>,
 }
 
 fn select_pairs(
@@ -277,74 +318,303 @@ pub fn daily_status(
     }))
 }
 
+#[cfg(test)]
 pub async fn start(state: &AppState) -> AppResult<Value> {
-    // Serialize generation only; no database lock is held during HTTP requests.
+    start_with_path(state).await.map(|(session, _)| session)
+}
+
+pub async fn start_with_path(state: &AppState) -> AppResult<(Value, &'static str)> {
+    // Serialize session creation. Neither the database lock nor this gate is used for prefetch.
     let _gate = state.practice_gate.lock().await;
-    let (key, settings, candidates, rechecks, daily) = {
+    let (key, settings, slots) = {
         let i = state.lock()?;
         let today = Local::now().date_naive();
         exec(&i.db,"UPDATE practice_sessions SET status='completed',completed_at=?1 WHERE status='submitted'",&[&db::now()])?;
         exec(&i.db,"UPDATE practice_sessions SET status='abandoned',completed_at=?1 WHERE status='pending' AND NOT EXISTS (SELECT 1 FROM valid_practice_questions q WHERE q.session_id=practice_sessions.id)",&[&db::now()])?;
         if let Some(p) = pending_session(&i)? {
-            return session(&i, text(&p, "id"));
+            return session(&i, text(&p, "id")).map(|session| (session, "resume"));
         }
-        let rechecks = mastery::guided_rechecks(&i, today)?;
-        let plan = select_pairs(
-            mastery::pairs_on(&i, today)?,
-            &rechecks,
-            i.settings.practice_question_count,
-        );
-        if plan.is_empty() {
+
+        let slots = generation_slots(&i, today, &i.settings)?;
+        if slots.is_empty() {
             return Err(
-                "现在没有需要练习的内容。先去错题库确认错题,或者等已掌握的知识点到了复习时间再来"
-                    .into(),
+                "现在没有需要练习的内容。先去错题库确认错题，或者等到了复习时间再来。".into(),
             );
         }
-        (
-            i.require_key()?,
-            i.settings.clone(),
-            plan,
-            rechecks,
-            !daily_submitted(&i, today)?,
-        )
+
+        let key = i.key()?;
+        let curriculum = Curriculum::from(&i.settings);
+        let prepared = i.prepared_practice.as_ref().filter(|batch| {
+            batch.curriculum == curriculum
+                && batch.credential_hash == crate::state::hash(key.as_bytes())
+        });
+        let blocked = voided_question_keys(&i)?;
+        let mut groups = Vec::new();
+        for slot in &slots {
+            let history = QuestionHistory::load(&i, &slot.assignment.pair)?;
+            let mut candidates = prepared
+                .into_iter()
+                .flat_map(|batch| &batch.questions)
+                .filter(|question| slot.matches(question) && history.allows(question))
+                .cloned()
+                .collect::<Vec<_>>();
+            candidates.extend(local_questions(&i, slot, &history, &blocked)?);
+            groups.push((candidates, slot.assignment.count));
+        }
+        let questions = assemble_round(groups, blocked, i.settings.practice_question_count);
+        if !questions.is_empty() {
+            let daily = !daily_submitted(&i, today)?;
+            let session = save_at(&i, &questions, daily, Utc::now())?;
+            if !key.is_empty() {
+                // Prepare only the first missing assignment, so a quick round has bounded AI cost.
+                let missing = slots.iter().find_map(|slot| {
+                    let filled = questions
+                        .iter()
+                        .filter(|question| slot.matches(question))
+                        .count();
+                    let remaining = slot.assignment.count.saturating_sub(filled);
+                    (remaining > 0).then(|| {
+                        let mut slot = slot.clone();
+                        slot.assignment.count = remaining;
+                        slot
+                    })
+                });
+                let variety = || {
+                    if questions.iter().any(|question| question.template.is_none()) {
+                        return None;
+                    }
+                    slots
+                        .iter()
+                        .find(|slot| slot.assignment.purpose == Purpose::Reinforcement)
+                        .cloned()
+                        .map(|mut slot| {
+                            slot.assignment.count = 1;
+                            slot
+                        })
+                };
+                if let Some(slot) = missing.or_else(variety) {
+                    prepare_next(state, curriculum, key, slot);
+                }
+            }
+            return Ok((session, "ready"));
+        }
+        if key.is_empty() {
+            return Err("暂时没有适合的离线题。可在设置中填写 API Key，在线出题后再开始。".into());
+        }
+        (key, i.settings.clone(), slots)
     };
-    let mut tasks = Vec::new();
-    for Assignment { pair, count, .. } in candidates {
+
+    let curriculum = Curriculum::from(&settings);
+    let mut tasks = JoinSet::new();
+    for (index, slot) in slots.into_iter().enumerate() {
         let state = state.clone();
         let key = key.clone();
         let grade = settings.grade;
-        let difficulty = pair
-            .pending_guidance_level(&rechecks)
-            .unwrap_or_else(|| settings.practice_difficulty.clone());
-        tasks.push(tauri::async_runtime::spawn(async move {
-            make_questions(&state, &pair, count + 2, &key, grade, &difficulty)
-                .await
-                .map(|questions| (questions, count))
-        }));
+        tasks.spawn(async move { (index, timed_questions(&state, &key, grade, &slot).await) });
     }
+    let mut generated = Vec::new();
+    while let Some(task) = tasks.join_next().await {
+        generated.push(task.map_err(|_| "练习生成任务中断，请重试")?);
+    }
+    generated.sort_by_key(|(index, _)| *index);
+
+    let i = state.lock()?;
+    if Curriculum::from(&i.settings) != curriculum {
+        return Err("教材、年级或学期已更改，请重新开始练习".into());
+    }
+    let today = Local::now().date_naive();
     let mut groups = Vec::new();
     let mut first_error = None;
-    for task in tasks {
-        match task.await.map_err(|_| "练习生成任务中断,请重试")? {
-            Ok(q) => groups.push(q),
-            Err(e) => {
-                first_error.get_or_insert(e);
+    let mut verified = Vec::new();
+    for (_, result) in generated {
+        match result {
+            Ok(questions) => verified.extend(questions),
+            Err(error) => {
+                first_error.get_or_insert(error);
             }
         }
     }
-    let i = state.lock()?;
+    // Use the current plan after waiting. A confirmed mistake or a review may have changed.
+    for slot in generation_slots(&i, today, &settings)? {
+        let history = QuestionHistory::load(&i, &slot.assignment.pair)?;
+        let questions = verified
+            .iter()
+            .filter(|question| slot.matches(question) && history.allows(question))
+            .cloned()
+            .collect();
+        groups.push((questions, slot.assignment.count));
+    }
     let questions = assemble_round(
         groups,
         voided_question_keys(&i)?,
         settings.practice_question_count,
     );
     if questions.is_empty() {
-        return Err(first_error.unwrap_or_else(|| "没能生成合格的练习题,请稍后重试".into()));
+        return Err(first_error.unwrap_or_else(|| "暂时没有生成合适的题目，请重试。".into()));
     }
-    if i.settings.grade != settings.grade || i.settings.semester != settings.semester {
-        return Err("年级或学期已更改，请重新开始练习".into());
+    let daily = !daily_submitted(&i, today)?;
+    save_at(&i, &questions, daily, Utc::now()).map(|session| (session, "online"))
+}
+
+impl GenerationSlot {
+    fn matches(&self, question: &Question) -> bool {
+        question.pair.cause == self.assignment.pair.cause
+            && question.pair.point == self.assignment.pair.point
+            && question.level.as_ref() == Some(&self.difficulty)
+            && self.recheck.as_ref().is_none_or(|requirement| {
+                requirement.accepts(question.structure(), self.difficulty.code())
+            })
     }
-    save_at(&i, &questions, daily, Utc::now())
+}
+
+fn generation_slots(
+    i: &Inner,
+    today: NaiveDate,
+    settings: &Settings,
+) -> AppResult<Vec<GenerationSlot>> {
+    let rechecks = mastery::guided_rechecks(i, today)?;
+    Ok(select_pairs(
+        mastery::pairs_on(i, today)?,
+        &rechecks,
+        settings.practice_question_count,
+    )
+    .into_iter()
+    .map(|assignment| {
+        let recheck = assignment
+            .pair
+            .pending_guidance_requirement(&rechecks)
+            .cloned();
+        let difficulty = recheck
+            .as_ref()
+            .map_or(&settings.practice_difficulty, |r| &r.level)
+            .clone();
+        GenerationSlot {
+            assignment,
+            difficulty,
+            recheck,
+        }
+    })
+    .collect())
+}
+
+fn prepare_next(state: &AppState, curriculum: Curriculum, key: String, slot: GenerationSlot) {
+    let Ok(gate) = state.practice_preparation.clone().try_lock_owned() else {
+        return;
+    };
+    let state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        let _gate = gate;
+        let Ok(mut questions) = timed_questions(&state, &key, curriculum.grade, &slot).await else {
+            return;
+        };
+        questions.retain(|question| slot.matches(question));
+        questions.truncate(slot.assignment.count);
+        if questions.is_empty() {
+            return;
+        }
+        if let Ok(mut i) = state.lock() {
+            if Curriculum::from(&i.settings) == curriculum && i.key().as_deref() == Ok(key.as_str())
+            {
+                i.prepared_practice = Some(PreparedBatch {
+                    curriculum,
+                    credential_hash: crate::state::hash(key.as_bytes()),
+                    questions,
+                });
+            }
+        }
+    });
+}
+
+async fn timed_questions(
+    state: &AppState,
+    key: &str,
+    grade: i64,
+    slot: &GenerationSlot,
+) -> AppResult<Vec<Question>> {
+    tokio::time::timeout(
+        Duration::from_secs(45),
+        make_questions(state, key, grade, slot),
+    )
+    .await
+    .map_err(|_| "出题等候时间较长，请重试。".to_string())?
+}
+
+fn local_questions(
+    i: &Inner,
+    slot: &GenerationSlot,
+    history: &QuestionHistory,
+    blocked: &HashSet<(String, String)>,
+) -> AppResult<Vec<Question>> {
+    if slot
+        .recheck
+        .as_ref()
+        .is_some_and(|r| !r.accepts_structure(Structure::Calculation))
+    {
+        return Ok(vec![]);
+    }
+    let pair = &slot.assignment.pair;
+    let Some(row) = one(
+        &i.db,
+        "SELECT p.code FROM knowledge_points p JOIN curriculum_knowledge_points c
+         ON c.knowledge_point_id=p.id WHERE p.id=?1 AND c.curriculum_id=?2 AND p.active=1
+         AND (c.grade<?3 OR (c.grade=?3 AND (c.semester IS NULL OR c.semester<=?4)))",
+        &[
+            &pair.point,
+            &i.settings.curriculum_id,
+            &i.settings.grade,
+            &i.settings.semester,
+        ],
+    )?
+    else {
+        return Ok(vec![]);
+    };
+    let Some(family) = practice_templates::family(text(&row, "code"), &pair.cause) else {
+        return Ok(vec![]);
+    };
+    let seed = uuid::Uuid::new_v4().as_u128() as u32;
+    let numeric_limit = if i.settings.grade == 2 && i.settings.semester == 1 {
+        100
+    } else {
+        10000
+    };
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    for offset in 0..128 {
+        let Some(sample) = practice_templates::generate(
+            family,
+            &slot.difficulty,
+            numeric_limit,
+            seed.wrapping_add(offset),
+        ) else {
+            continue;
+        };
+        let kind = if sample.options.is_empty() {
+            "number"
+        } else {
+            "choice"
+        };
+        let question = Question {
+            markdown: sample.markdown,
+            options: sample.options,
+            kind: kind.into(),
+            correct: sample.correct,
+            unit: sample.unit.into(),
+            solution: sample.solution,
+            figure: Value::Null,
+            solver: "code".into(),
+            pair: pair.clone(),
+            level: Some(slot.difficulty.clone()),
+            template: Some(sample.metadata),
+        };
+        let key = question.variant_key();
+        if history.allows(&question) && !blocked.contains(&key) && seen.insert(key) {
+            candidates.push(question);
+            if candidates.len() >= slot.assignment.count + 2 {
+                break;
+            }
+        }
+    }
+    Ok(candidates)
 }
 
 fn assemble_round(
@@ -363,9 +633,7 @@ fn assemble_round(
             if *remaining == 0 {
                 continue;
             }
-            if let Some(question) = group
-                .find(|question| seen.insert(question_key(&question.markdown, &question.figure)))
-            {
+            if let Some(question) = group.find(|question| seen.insert(question.variant_key())) {
                 questions.push(question);
                 *remaining -= 1;
                 if questions.len() == round_size {
@@ -380,36 +648,99 @@ fn assemble_round(
     questions
 }
 
-fn voided_question_keys(i: &Inner) -> AppResult<HashSet<(String, String)>> {
+type VariantKey = (String, String);
+
+fn variant_key(markdown: &str, figure: &Value) -> VariantKey {
+    (
+        practice_templates::canonical_prompt(markdown),
+        figure::validate(figure).unwrap_or(Value::Null).to_string(),
+    )
+}
+
+impl Question {
+    fn structure(&self) -> Structure {
+        Structure::inspect(&self.markdown, &self.figure, self.template.is_some())
+    }
+
+    fn variant_key(&self) -> VariantKey {
+        if let Some(template) = &self.template {
+            return (template.fingerprint.clone(), "null".into());
+        }
+        variant_key(&self.markdown, &self.figure)
+    }
+
+    fn verification(&self) -> Value {
+        if let Some(template) = &self.template {
+            return json!({"source":"template","solver":"code","template":template,"structure":self.structure()});
+        }
+        json!({
+            "source":"ai",
+            "solver":self.solver,
+            "model":verification_model(),
+            "fingerprint":[self.kind, self.variant_key()],
+            "structure":self.structure(),
+        })
+    }
+}
+
+fn voided_question_keys(i: &Inner) -> AppResult<HashSet<VariantKey>> {
     Ok(query(&i.db,"SELECT q.question_markdown q,q.figure_json FROM practice_questions q JOIN practice_question_review_state r ON r.question_id=q.id AND r.action='void'",&[])?
-        .iter().map(|row| question_key(text(row, "q"), &parsed(row, "figure_json"))).collect())
+        .iter().map(|row| variant_key(text(row, "q"), &parsed(row, "figure_json"))).collect())
+}
+
+struct QuestionHistory {
+    prior: HashSet<VariantKey>,
+    originals: HashSet<String>,
+}
+
+impl QuestionHistory {
+    fn load(i: &Inner, pair: &Pair) -> AppResult<Self> {
+        let history = query(
+            &i.db,
+            "SELECT question_markdown q,figure_json FROM practice_questions WHERE root_cause_id=?1 AND knowledge_point_id=?2",
+            &[&pair.cause, &pair.point],
+        )?;
+        let originals = query(
+            &i.db,
+            "SELECT m.question_markdown q FROM mistakes m JOIN mistake_root_causes mrc
+             ON mrc.mistake_id=m.id AND mrc.is_primary=1
+             WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2",
+            &[&pair.cause, &pair.point],
+        )?;
+        Ok(Self {
+            prior: history
+                .iter()
+                .map(|row| variant_key(text(row, "q"), &parsed(row, "figure_json")))
+                .collect(),
+            originals: originals
+                .iter()
+                .map(|row| practice_templates::canonical_prompt(text(row, "q")))
+                .collect(),
+        })
+    }
+
+    fn allows(&self, question: &Question) -> bool {
+        let key = question.variant_key();
+        !self.originals.contains(&key.0) && !self.prior.contains(&key)
+    }
 }
 
 async fn make_questions(
     state: &AppState,
-    pair: &Pair,
-    count: usize,
     key: &str,
     grade: i64,
-    difficulty: &PracticeDifficulty,
+    slot: &GenerationSlot,
 ) -> AppResult<Vec<Question>> {
-    let (info, examples, avoid, seen, originals) = {
+    let pair = &slot.assignment.pair;
+    let count = slot.assignment.count + 2;
+    let (info, examples, avoid, history, blocked) = {
         let i = state.lock()?;
         let info=one(&i.db,"SELECT kp.label kp,rc.label cause,COALESCE(rc.description,'') description FROM knowledge_points kp,root_causes rc WHERE kp.id=?1 AND rc.id=?2",&[&pair.point,&pair.cause])?.ok_or("知识点或归因不存在")?;
         let examples=query(&i.db,"SELECT m.question_markdown question,COALESCE(m.student_answer,'') studentAnswer,m.analysis_json aj FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id=m.id AND mrc.is_primary=1 WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2 ORDER BY m.updated_at DESC LIMIT 2",&[&pair.cause,&pair.point])?;
         let avoid=query(&i.db,"SELECT question_markdown q,figure_json FROM practice_questions WHERE root_cause_id=?1 AND knowledge_point_id=?2 ORDER BY created_at DESC LIMIT 10",&[&pair.cause,&pair.point])?;
-        let originals=query(&i.db,"SELECT m.question_markdown q FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id=m.id AND mrc.is_primary=1 WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2",&[&pair.cause,&pair.point])?;
-        let history=query(&i.db,"SELECT question_markdown q,figure_json FROM practice_questions WHERE root_cause_id=?1 AND knowledge_point_id=?2",&[&pair.cause,&pair.point])?;
-        let seen = history
-            .iter()
-            .map(|row| question_key(text(row, "q"), &parsed(row, "figure_json")))
-            .chain(voided_question_keys(&i)?)
-            .collect::<HashSet<_>>();
-        let originals = originals
-            .iter()
-            .map(|row| question_key(text(row, "q"), &Value::Null).0)
-            .collect::<HashSet<_>>();
-        (info, examples, avoid, seen, originals)
+        let history = QuestionHistory::load(&i, pair)?;
+        let blocked = voided_question_keys(&i)?;
+        (info, examples, avoid, history, blocked)
     };
     let examples = examples
         .iter()
@@ -448,10 +779,14 @@ async fn make_questions(
         .map(|v| format!("- {}", text(v, "q")))
         .collect::<Vec<_>>()
         .join("\n");
-    let system = include_str!("../assets/practice-prompt.txt")
+    let mut system = include_str!("../assets/practice-prompt.txt")
         .replace("{{grade}}", &grade.to_string())
         .replace("{{count}}", &count.to_string())
-        .replace("{{difficulty}}", difficulty.prompt_text());
+        .replace("{{difficulty}}", slot.difficulty.prompt_text());
+    if let Some(requirement) = &slot.recheck {
+        system.push_str("\n本轮复测的题目形式以此条为准。");
+        system.push_str(&requirement.instructions());
+    }
     let user=format!("知识点:{}\n错误原因:{}。{}\n孩子做错的题:\n{examples}\n以下题目之前已经出过,不要重复:\n{avoid}\n请出 {count} 道新题。",text(&info,"kp"),text(&info,"cause"),text(&info,"description"));
     let messages = json!([{"role":"system","content":system},{"role":"user","content":user}]);
     let mut drafts = Vec::new();
@@ -468,52 +803,101 @@ async fn make_questions(
         )
         .await?;
         if let Some(value) = extract_json(&reply.content) {
-            let mut seen = seen.clone();
+            let mut seen = blocked.clone();
             drafts = parse_questions(&value, pair)
                 .into_iter()
-                .filter(|question| {
-                    let key = question_key(&question.markdown, &question.figure);
-                    !originals.contains(&key.0) && seen.insert(key)
+                .map(|mut question| {
+                    question.level = Some(slot.difficulty.clone());
+                    question
                 })
+                .filter(|question| {
+                    slot.matches(question)
+                        && history.allows(question)
+                        && seen.insert(question.variant_key())
+                })
+                .take(count)
                 .collect();
         }
         if !drafts.is_empty() {
             break;
         }
     }
-    let mut tasks = Vec::new();
-    for mut q in drafts {
-        q.level = Some(difficulty.clone());
+    let mut tasks = JoinSet::new();
+    for (index, question) in drafts.into_iter().enumerate() {
         let state = state.clone();
         let key = key.to_owned();
-        tasks.push(tauri::async_runtime::spawn(async move{
-   if ["cube_net","cube_stack"].contains(&text(&q.figure,"type")){q.solver="code".into();return Ok(Some(q));}
-   let options=q.options.iter().enumerate().map(|(i,o)|format!("{}. {}",(b'A'+i as u8)as char,o)).collect::<Vec<_>>().join("\n");
-   let how=if q.kind=="choice"{"这是选择题,answer 填正确选项字母。"}else{"answer 填最终结果:整数、小数、最简分数(a/b)或商...余数,不带单位。"};
-   let figure=if q.figure.is_null(){String::new()}else{format!("\n配图数据:{}",q.figure)};
-   let messages=json!([{"role":"system","content":format!("你是一位严谨的小学数学老师。独立解答题目,推理简短,最后单独一行给出 JSON 对象: {{\"answer\":\"...\"}}。{how}")},{"role":"user","content":format!("{}{figure}\n{options}",q.markdown)}]);
-   let reply=chat(&state,&key,verification_model(),messages,crate::ai::ChatOptions { max_tokens:4096,timeout:45,retries:1,..Default::default() }).await?;
-   let value=extract_json(&reply.content).unwrap_or(Value::Null);let answer=str_value(&value["answer"]);
-   if answers::check(&q.kind,&answer,&q.correct,&q.unit){q.solver=answer;Ok(Some(q))}else{Ok(None)}
-  }));
+        tasks.spawn(async move { (index, verify_question(&state, &key, question).await) });
     }
     let mut verified = Vec::new();
     let mut first_error = None;
-    for task in tasks {
-        match task.await.map_err(|_| "校验任务被中断")? {
-            Ok(Some(q)) => verified.push(q),
+    while let Some(task) = tasks.join_next().await {
+        let (index, result) = task.map_err(|_| "校验任务被中断")?;
+        match result {
+            Ok(Some(question)) => verified.push((index, question)),
             Ok(None) => {}
-            Err(e) => {
-                first_error.get_or_insert(e);
+            Err(error) => {
+                first_error.get_or_insert(error);
             }
         }
     }
     if verified.is_empty() {
-        if let Some(e) = first_error {
-            return Err(e);
+        if let Some(error) = first_error {
+            return Err(error);
         }
     }
-    Ok(verified)
+    verified.sort_by_key(|(index, _)| *index);
+    Ok(verified.into_iter().map(|(_, question)| question).collect())
+}
+
+async fn verify_question(
+    state: &AppState,
+    key: &str,
+    mut question: Question,
+) -> AppResult<Option<Question>> {
+    if ["cube_net", "cube_stack"].contains(&text(&question.figure, "type")) {
+        question.solver = "code".into();
+        return Ok(Some(question));
+    }
+    let options = question
+        .options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| format!("{}. {option}", char::from(b'A' + index as u8)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let how = if question.kind == "choice" {
+        "这是选择题,answer 填正确选项字母。"
+    } else {
+        "answer 填最终结果:整数、小数、最简分数(a/b)或商...余数,不带单位。"
+    };
+    let figure = if question.figure.is_null() {
+        String::new()
+    } else {
+        format!("\n配图数据:{}", question.figure)
+    };
+    let messages = json!([
+        {"role":"system","content":format!("你是一位严谨的小学数学老师。独立解答题目,推理简短,最后单独一行给出 JSON 对象: {{\"answer\":\"...\"}}。{how}")},
+        {"role":"user","content":format!("{}{figure}\n{options}", question.markdown)},
+    ]);
+    let reply = chat(
+        state,
+        key,
+        verification_model(),
+        messages,
+        crate::ai::ChatOptions {
+            max_tokens: 4096,
+            retries: 1,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let value = extract_json(&reply.content).unwrap_or(Value::Null);
+    let answer = str_value(&value["answer"]);
+    if !answers::check(&question.kind, &answer, &question.correct, &question.unit) {
+        return Ok(None);
+    }
+    question.solver = answer;
+    Ok(Some(question))
 }
 pub(crate) fn question_key(markdown: &str, figure: &Value) -> (String, String) {
     let figure = figure::validate(figure).unwrap_or(Value::Null);
@@ -537,18 +921,24 @@ pub(crate) fn save_at(
         exec(&i.db,"INSERT INTO practice_sessions(id,practice_date,status,created_at,is_daily) VALUES (?1,?2,'pending',?3,?4)",&[&session_id,&today,&t,&daily])?;
         for (pos, q) in questions.iter().enumerate() {
             let source=one(&i.db,"SELECT m.id FROM mistakes m JOIN mistake_root_causes mrc ON mrc.mistake_id=m.id AND mrc.is_primary=1 WHERE m.status='active' AND mrc.root_cause_id=?1 AND m.knowledge_point_id=?2 ORDER BY m.updated_at DESC LIMIT 1",&[&q.pair.cause,&q.pair.point])?;
-            exec(&i.db,"INSERT INTO practice_questions(id,session_id,position,root_cause_id,knowledge_point_id,source_mistake_id,question_markdown,answer_type,options_json,correct_answer,answer_unit,solution_markdown,figure_json,difficulty,status,verify_json,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'assigned',?15,?16)",&[&db::id(),&session_id,&(pos as i64),&q.pair.cause,&q.pair.point,&source.as_ref().and_then(|s|s["id"].as_str()),&q.markdown,&q.kind,&json!(q.options).to_string(),&q.correct,&q.unit,&q.solution,&if q.figure.is_null(){None}else{Some(q.figure.to_string())},&q.level.as_ref().map_or(1, PracticeDifficulty::code),&json!({"solver":q.solver,"model":verification_model()}).to_string(),&t])?;
+            exec(&i.db,"INSERT INTO practice_questions(id,session_id,position,root_cause_id,knowledge_point_id,source_mistake_id,question_markdown,answer_type,options_json,correct_answer,answer_unit,solution_markdown,figure_json,difficulty,status,verify_json,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'assigned',?15,?16)",&[&db::id(),&session_id,&(pos as i64),&q.pair.cause,&q.pair.point,&source.as_ref().and_then(|s|s["id"].as_str()),&q.markdown,&q.kind,&json!(q.options).to_string(),&q.correct,&q.unit,&q.solution,&if q.figure.is_null(){None}else{Some(q.figure.to_string())},&q.level.as_ref().map_or(1, PracticeDifficulty::code),&q.verification().to_string(),&t])?;
+        }
+        let ai_count = questions
+            .iter()
+            .filter(|question| question.template.is_none())
+            .count();
+        if ai_count > 0 {
+            repo::log(
+                i,
+                "generate_practice",
+                json!({"sessionId":session_id,"count":ai_count}),
+                None,
+                practice_model(),
+                None,
+            )?;
         }
         Ok(())
     })?;
-    repo::log(
-        i,
-        "generate_practice",
-        json!({"sessionId":session_id,"count":questions.len()}),
-        None,
-        practice_model(),
-        None,
-    )?;
     session(i, &session_id)
 }
 pub fn submit(i: &Inner, input: &Value) -> AppResult<Value> {
@@ -761,7 +1151,10 @@ mod tests {
                         correct: None,
                         cross_day_correct: None,
                         due: true,
-                        level: PracticeDifficulty::Medium,
+                        requirement: RecheckRequirement {
+                            structure: Structure::Calculation,
+                            level: PracticeDifficulty::Medium,
+                        },
                     },
                 )
             })
@@ -804,6 +1197,7 @@ mod tests {
             solver: String::new(),
             pair: pair(streak),
             level: None,
+            template: None,
         };
         let questions = assemble_round(
             vec![
@@ -852,7 +1246,10 @@ mod tests {
                     correct,
                     cross_day_correct: correct,
                     due: true,
-                    level: PracticeDifficulty::Medium,
+                    requirement: RecheckRequirement {
+                        structure: Structure::Calculation,
+                        level: PracticeDifficulty::Medium,
+                    },
                 },
             )
         })

@@ -101,6 +101,7 @@ pub struct AppState {
     pub client: reqwest::Client,
     pub ai_endpoint: String,
     pub practice_gate: Arc<tokio::sync::Mutex<()>>,
+    pub practice_preparation: Arc<tokio::sync::Mutex<()>>,
 }
 pub struct Pending {
     pub file: PathBuf,
@@ -111,11 +112,17 @@ pub struct Inner {
     pub directory: PathBuf,
     pub settings: Settings,
     pub pending: HashMap<String, Pending>,
+    pub prepared_practice: Option<crate::practice::PreparedBatch>,
 }
 impl AppState {
     pub fn new(directory: PathBuf, legacy: Vec<PathBuf>) -> AppResult<Self> {
         db::import_legacy(&directory, &legacy)?;
         let db = db::open(&directory.join("zero-defect.sqlite"))?;
+        db::exec(
+            &db,
+            "UPDATE practice_start_samples SET status='interrupted' WHERE status='pending'",
+            &[],
+        )?;
         db::exec(&db,"UPDATE papers SET status='failed',error_message='识别被中断了,请点重试',updated_at=?1 WHERE status='processing'",&[&db::now()])?;
         fs::create_dir_all(directory.join("images")).map_err(db::err)?;
         fs::create_dir_all(directory.join("tmp-images")).map_err(db::err)?;
@@ -142,9 +149,11 @@ impl AppState {
                 directory,
                 settings,
                 pending: HashMap::new(),
+                prepared_practice: None,
             })),
             client,
             practice_gate: Arc::new(tokio::sync::Mutex::new(())),
+            practice_preparation: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
     pub fn lock(&self) -> AppResult<MutexGuard<'_, Inner>> {

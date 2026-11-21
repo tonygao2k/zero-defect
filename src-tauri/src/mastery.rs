@@ -1,6 +1,7 @@
 use crate::{
     db::{self, one, parsed, query, text, AppResult},
     practice::question_key,
+    practice_structure::{RecheckRequirement, Structure},
     schedule::Projection,
     state::{Inner, PracticeDifficulty},
 };
@@ -23,7 +24,11 @@ impl Pair {
     fn guidance<'a>(&self, rechecks: &'a GuidedRechecks) -> Option<&'a GuidedRecheck> {
         rechecks
             .get(&(self.cause.clone(), self.point.clone()))
-            .filter(|recheck| recheck.cross_day_correct.is_none() && recheck.due)
+            .filter(|recheck| {
+                recheck.cross_day_correct.is_none()
+                    && recheck.due
+                    && recheck.requirement.structure != Structure::Unknown
+            })
     }
 
     pub fn pending_guidance<'a>(&self, rechecks: &'a GuidedRechecks) -> Option<&'a str> {
@@ -31,8 +36,11 @@ impl Pair {
             .map(|recheck| recheck.since.as_str())
     }
 
-    pub fn pending_guidance_level(&self, rechecks: &GuidedRechecks) -> Option<PracticeDifficulty> {
-        self.guidance(rechecks).map(|recheck| recheck.level.clone())
+    pub fn pending_guidance_requirement<'a>(
+        &self,
+        rechecks: &'a GuidedRechecks,
+    ) -> Option<&'a RecheckRequirement> {
+        self.guidance(rechecks).map(|recheck| &recheck.requirement)
     }
 
     pub fn practiceable(&self, rechecks: &GuidedRechecks) -> bool {
@@ -48,7 +56,7 @@ pub struct GuidedRecheck {
     pub correct: Option<bool>,
     pub cross_day_correct: Option<bool>,
     pub due: bool,
-    pub level: PracticeDifficulty,
+    pub requirement: RecheckRequirement,
 }
 
 pub type GuidedRechecks = HashMap<(String, String), GuidedRecheck>;
@@ -58,16 +66,19 @@ pub fn guided_rechecks(i: &Inner, today: NaiveDate) -> AppResult<GuidedRechecks>
         &i.db,
         "WITH guidance AS (
             SELECT q.root_cause_id,q.knowledge_point_id,q.session_id,q.revision_hint_at,q.difficulty,
+                q.question_markdown,q.figure_json,q.verify_json,
                 COALESCE(q.revision_hint_local_date,date(q.revision_hint_at,'localtime')) hint_day,ROW_NUMBER() OVER (
                 PARTITION BY q.root_cause_id,q.knowledge_point_id ORDER BY q.revision_hint_at DESC,q.question_order DESC
             ) newest
             FROM valid_practice_questions q WHERE q.revision_hint_at IS NOT NULL
          ), candidates AS (
-            SELECT a.*,q.rowid question_order,q.difficulty,q.question_markdown,q.figure_json
+            SELECT a.*,q.rowid question_order,q.difficulty,q.question_markdown,q.figure_json,q.verify_json
             FROM independent_practice_evidence a JOIN practice_questions q ON q.id=a.practice_question_id
          )
          SELECT g.root_cause_id cause,g.knowledge_point_id point,g.revision_hint_at since,g.hint_day<?1 due,
-                   g.hint_day,g.difficulty,a.outcome='correct' correct,a.question_order,
+                   g.hint_day,g.difficulty,g.question_markdown,g.figure_json,g.verify_json,
+                   a.outcome='correct' correct,a.question_order,
+                   a.question_markdown answer_markdown,a.figure_json answer_figure_json,a.verify_json answer_verify_json,
                    a.difficulty answer_difficulty,COALESCE(a.local_date,date(a.created_at,'localtime')) answer_day
             FROM guidance g LEFT JOIN candidates a
               ON a.root_cause_id=g.root_cause_id AND a.knowledge_point_id=g.knowledge_point_id
@@ -87,14 +98,39 @@ pub fn guided_rechecks(i: &Inner, today: NaiveDate) -> AppResult<GuidedRechecks>
         let first = &group[0];
         let cause = text(first, "cause");
         let point = text(first, "point");
-        let candidates = group.iter().filter(|row| row["correct"].is_i64());
-        let correct = candidates.clone().next().map(|row| row["correct"] == 1);
+        let requirement = RecheckRequirement {
+            structure: Structure::from_storage(
+                text(first, "question_markdown"),
+                first["figure_json"].as_str(),
+                &parsed(first, "verify_json"),
+            ),
+            level: PracticeDifficulty::from_code(first["difficulty"].as_i64().unwrap_or(1)),
+        };
+        let candidates = group
+            .iter()
+            .filter(|row| row["correct"].is_i64())
+            .map(|row| {
+                let structure = Structure::from_storage(
+                    text(row, "answer_markdown"),
+                    row["answer_figure_json"].as_str(),
+                    &parsed(row, "answer_verify_json"),
+                );
+                (row, structure)
+            });
+        let correct = candidates.clone().find_map(|(row, structure)| {
+            requirement
+                .accepts_structure(structure)
+                .then(|| row["correct"] == 1)
+        });
         let mut cross_day = candidates
-            .filter(|row| {
-                row["answer_difficulty"] == row["difficulty"]
+            .filter(|(row, structure)| {
+                row["answer_difficulty"]
+                    .as_i64()
+                    .is_some_and(|level| requirement.accepts(*structure, level))
                     && text(row, "answer_day") > text(row, "hint_day")
                     && !text(row, "hint_day").is_empty()
             })
+            .map(|(row, _)| row)
             .peekable();
         let cross_day_correct = if cross_day.peek().is_some() {
             let variants = variant_orders(i, cause, point)?;
@@ -115,7 +151,7 @@ pub fn guided_rechecks(i: &Inner, today: NaiveDate) -> AppResult<GuidedRechecks>
                 correct,
                 cross_day_correct,
                 due: first["due"] == 1,
-                level: PracticeDifficulty::from_code(first["difficulty"].as_i64().unwrap_or(1)),
+                requirement,
             },
         );
     }

@@ -9,7 +9,7 @@ use std::{
 };
 
 pub type AppResult<T> = Result<T, String>;
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 pub fn now() -> String {
     stamp(Utc::now())
@@ -193,6 +193,9 @@ pub fn migrate(db: &Connection, file: Option<&Path>, target: i64) -> AppResult<(
                         exec(db, &format!("UPDATE {table} SET {day}=date({column},'localtime') WHERE {column} IS NOT NULL"), &[])?;
                     }
                 }
+                9 => db
+                    .execute_batch(include_str!("../assets/v9.sql"))
+                    .map_err(err)?,
                 _ => return Err("不支持的数据库版本".into()),
             }
             if !query(db, "PRAGMA foreign_key_check", &[])?.is_empty() {

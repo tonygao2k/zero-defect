@@ -65,6 +65,11 @@ export const api: Api = {
     call('getHomeStats', (args as unknown[])[0]),
   startPractice: (...args: Parameters<Api['startPractice']>) =>
     call('startPractice', (args as unknown[])[0]),
+  finishPracticeStartSample: (input) =>
+    call('finishPracticeStartSample', input),
+  getPracticeStartMetrics: (
+    ...args: Parameters<Api['getPracticeStartMetrics']>
+  ) => call('getPracticeStartMetrics', (args as unknown[])[0]),
   submitPractice: (...args: Parameters<Api['submitPractice']>) =>
     call('submitPractice', (args as unknown[])[0]),
   getPracticeResult: (input) => call('getPracticeResult', input),

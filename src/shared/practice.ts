@@ -162,6 +162,30 @@ export type PracticeSession = {
   questions: PracticeQuestion[];
 };
 
+type PracticeStartTiming = {
+  successCount: number;
+  p50Ms: number | null;
+  p90Ms: number | null;
+};
+
+export type PracticeStartMetrics = {
+  overall: PracticeStartTiming & {
+    outcomes: {
+      failedCount: number;
+      interruptedCount: number;
+      pendingCount: number;
+      failureRate: number | null;
+    };
+  };
+  ready: PracticeStartTiming;
+  online: PracticeStartTiming;
+  resume: PracticeStartTiming;
+  reviewedQuality: Record<
+    'template' | 'ai' | 'legacy',
+    { reviewedCount: number; invalidCount: number; invalidRate: number | null }
+  >;
+};
+
 /**
  * 第一次提交就记录对错(没学会的会留在后台,影响之后的出题)。
  * 此时不公布答案:孩子可以选择“修改错题”重做,或直接结束练习。

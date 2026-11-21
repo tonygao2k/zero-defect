@@ -17,6 +17,7 @@ import type {
   PracticeReview,
   PracticeReviewDecision,
   PracticeSession,
+  PracticeStartMetrics,
   ReviseResult,
 } from './practice';
 import type { HomeStats } from './stats';
@@ -51,6 +52,8 @@ export const IPC = {
   getTaxonomy: 'taxonomy:get',
   getHomeStats: 'home:stats',
   startPractice: 'practice:start',
+  finishPracticeStartSample: 'practice:finishStartSample',
+  getPracticeStartMetrics: 'practice:startMetrics',
   submitPractice: 'practice:submit',
   getPracticeResult: 'practice:result',
   requestPracticeHint: 'practice:hint',
@@ -165,8 +168,13 @@ export type Api = {
   getTaxonomy(): Promise<Taxonomy>;
 
   getHomeStats(): Promise<HomeStats>;
-  /** 开始(或接着做)一次智能练习。出题要等一会儿。 */
-  startPractice(): Promise<Result<PracticeSession>>;
+  startPractice(input?: {
+    requestId: string;
+  }): Promise<Result<PracticeSession>>;
+  finishPracticeStartSample(
+    input: { requestId: string } & ({ elapsedMs: number } | { failed: true }),
+  ): Promise<null>;
+  getPracticeStartMetrics(): Promise<PracticeStartMetrics>;
   getPracticeResult(input: {
     sessionId: string;
   }): Promise<Result<PracticeResult>>;

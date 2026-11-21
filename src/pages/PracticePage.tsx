@@ -105,6 +105,9 @@ export function PracticePage({ active }: { active: boolean }) {
   const [stats, setStats] = useState<HomeStats | null>(null);
   const [error, setError] = useState('');
   const statsDate = useRef('');
+  const startSample = useRef<{ requestId: string; clickedAt: number } | null>(
+    null,
+  );
   const resultSessionId =
     stage.name === 'result' || stage.name === 'revising'
       ? stage.session.sessionId
@@ -170,17 +173,56 @@ export function PracticePage({ active }: { active: boolean }) {
     };
   }, [active, resultSessionId]);
 
+  useEffect(() => {
+    if (!active || stage.name !== 'answering' || !startSample.current) return;
+    let frame = 0;
+    const markReady = () => {
+      window.cancelAnimationFrame(frame);
+      if (document.hidden) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(() => {
+          const sample = startSample.current;
+          if (!sample || document.hidden) return;
+          startSample.current = null;
+          void window.api
+            .finishPracticeStartSample({
+              requestId: sample.requestId,
+              elapsedMs: Math.round(performance.now() - sample.clickedAt),
+            })
+            .catch(() => {});
+        });
+      });
+    };
+    markReady();
+    document.addEventListener('visibilitychange', markReady);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('visibilitychange', markReady);
+    };
+  }, [active, stage.name]);
+
   const start = async () => {
+    const clickedAt = performance.now();
+    const requestId = Array.from(
+      crypto.getRandomValues(new Uint8Array(16)),
+      (byte) => byte.toString(16).padStart(2, '0'),
+    ).join('');
+    startSample.current = { requestId, clickedAt };
     setError('');
     setStage({ name: 'generating' });
     try {
-      const res = await window.api.startPractice();
+      const res = await window.api.startPractice({ requestId });
       if (!res.ok) {
+        startSample.current = null;
         setError(res.error);
         return setStage({ name: 'home' });
       }
       setStage({ name: 'answering', session: res.value });
     } catch {
+      startSample.current = null;
+      void window.api
+        .finishPracticeStartSample({ requestId, failed: true })
+        .catch(() => {});
       setError('暂时无法开始练习，请重试。');
       setStage({ name: 'home' });
     }
@@ -193,13 +235,7 @@ export function PracticePage({ active }: { active: boolean }) {
   };
 
   if (stage.name === 'generating')
-    return (
-      <Waiting
-        fill
-        title="正在为你出题…"
-        hint="每道题都会再算一遍确认答案没错,大约需要半分钟。"
-      />
-    );
+    return <Waiting fill title="正在准备练习…" />;
   if (stage.name === 'answering')
     return (
       <Answering

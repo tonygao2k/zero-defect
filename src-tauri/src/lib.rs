@@ -5,6 +5,9 @@ mod db;
 mod figure;
 mod mastery;
 mod practice;
+mod practice_metrics;
+mod practice_structure;
+mod practice_templates;
 mod question_review;
 mod repo;
 mod revision;
@@ -57,7 +60,7 @@ async fn backend(
     let outcome = match method.as_str() {
         "checkForUpdate" => Ok(check_update(&state).await),
         "testApiKey" => test_key(&state).await,
-        "startPractice" => practice::start(&state).await,
+        "startPractice" => practice_metrics::start(&state, &input).await,
         _ => tauri::async_runtime::spawn_blocking(move || dispatch(&state, &method, &input))
             .await
             .map_err(|_| "后台任务中断,请重试".to_string())?,
@@ -152,6 +155,8 @@ fn dispatch(state: &AppState, method: &str, input: &Value) -> AppResult<Value> {
         "listMistakes" => repo::mistakes(&i, input),
         "getTaxonomy" => repo::taxonomy(&i),
         "getHomeStats" => mastery::stats(&i),
+        "finishPracticeStartSample" => practice_metrics::finish(&i, input),
+        "getPracticeStartMetrics" => practice_metrics::summary(&i),
         "submitPractice" => practice::submit(&i, input),
         "getPracticeResult" => practice::result(&i, repo::required(input, "sessionId", 500)?),
         "requestPracticeHint" => revision::request_hint(&i, input),

@@ -35,6 +35,7 @@ fn scheduled_question(i: &state::Inner, label: &str) -> Question {
         solver: "15".into(),
         pair: mastery::pairs(i).unwrap().remove(0),
         level: None,
+        template: None,
     }
 }
 
@@ -351,7 +352,7 @@ fn guided_recheck_only_counts_a_comparable_new_variant_after_local_midnight() {
     repo::confirm_recommended(&i, &mistake).unwrap();
     let hint_day = practice_day(6);
     let tomorrow = practice_day(7);
-    let original = record_variant(&i, "引导前的题", "14", hint_day);
+    let original = record_variant(&i, "10+5=?", "14", hint_day);
     let original_id = &original["questions"][0]["id"];
     revision::request_hint(&i, &json!({"questionId":original_id,"step":1})).unwrap();
     exec(
@@ -366,21 +367,20 @@ fn guided_recheck_only_counts_a_comparable_new_variant_after_local_midnight() {
     .unwrap();
     let stats = |day| mastery::stats_on(&i, day).unwrap();
     let now = practice_time(hint_day, 23, 59);
-    let same_day =
-        practice::save_at(&i, &[scheduled_question(&i, "当天新题")], false, now).unwrap();
+    let same_day = practice::save_at(&i, &[scheduled_question(&i, "11+4=?")], false, now).unwrap();
     submit_on(&i, &same_day, "15", now);
     assert_eq!(stats(hint_day)["crossDayRecheck"]["waiting"], 1);
     assert_eq!(stats(hint_day)["guidedRecheck"]["completed"], 1);
     assert_eq!(stats(tomorrow)["dailyPractice"]["plan"]["recheck"], 1);
-    let mut harder = scheduled_question(&i, "更难的变式");
+    let mut harder = scheduled_question(&i, "12+3=?");
     harder.level = Some(state::PracticeDifficulty::Hard);
     let midnight = practice_time(tomorrow, 0, 1);
     let different = practice::save_at(&i, &[harder], false, midnight).unwrap();
     submit_on(&i, &different, "15", midnight);
-    record_variant(&i, "当天新题", "15", tomorrow);
-    record_variant(&i, "跳过变式", "", tomorrow);
+    record_variant(&i, "11+4=?", "15", tomorrow);
+    record_variant(&i, "13+2=?", "", tomorrow);
     assert_eq!(stats(tomorrow)["crossDayRecheck"]["due"], 1);
-    let measured = record_variant(&i, "次日新题", "15", tomorrow);
+    let measured = record_variant(&i, "14+1=?", "15", tomorrow);
     assert_eq!(
         stats(tomorrow)["crossDayRecheck"],
         json!({"waiting":0,"due":0,"completed":1,"correct":1})
@@ -433,10 +433,10 @@ fn mock_draft(i: &state::Inner, pid: &str) -> String {
     .to_owned()
 }
 #[test]
-fn fresh_database_has_all_eight_versions_and_taxonomy() {
+fn fresh_database_has_all_nine_versions_and_taxonomy() {
     let (_d, s) = setup();
     let i = s.lock().unwrap();
-    assert_eq!(count(&i, "schema_migrations"), 8);
+    assert_eq!(count(&i, "schema_migrations"), 9);
     let t = repo::taxonomy(&i).unwrap();
     assert!(t["causes"]
         .as_array()
@@ -725,6 +725,7 @@ fn confirm_practice_submit_revise_delete_preserves_history() {
         figure: Value::Null,
         solver: "13".into(),
         level: None,
+        template: None,
         pair: Pair {
             cause: "carry_omission".into(),
             point: "mul_two_digit".into(),
@@ -815,6 +816,7 @@ fn cross_day_mastery_ignores_skips_and_blank_paper_but_unsure_schedules_a_varian
         figure: Value::Null,
         solver: "15".into(),
         level: None,
+        template: None,
         pair: mastery::pairs(&i).unwrap().remove(0),
     };
     let submit = |session: &Value, answers: Value, stamp: Option<&str>| {
@@ -1137,6 +1139,7 @@ fn optional_guidance_rechecks_only_a_new_independent_first_answer() {
         figure: Value::Null,
         solver: "156".into(),
         level: None,
+        template: None,
         pair: Pair {
             cause: "carry_omission".into(),
             point: "mul_two_digit".into(),
@@ -1296,6 +1299,7 @@ fn review_before_submission_keeps_answers_private_and_never_creates_evidence() {
         figure: Value::Null,
         solver: "156".into(),
         level: None,
+        template: None,
         pair: mastery::pairs(&i).unwrap().remove(0),
     };
     let session = practice::save(
@@ -1797,4 +1801,496 @@ fn malformed_native_inputs_fail_without_panicking() {
     }
     assert!(dispatch(&state, "unknown", &json!({})).is_err());
     assert!(submit_paper(&state, &json!({"imageIds":[],"title":""})).is_err());
+}
+
+fn confirm_column_mistake(i: &state::Inner) {
+    let mistake = mock_draft(i, &mock_paper(i));
+    repo::confirm(
+        i,
+        &json!({
+            "mistakeId":mistake,"questionMarkdown":"２７ + ３６＝（ ）",
+            "studentAnswer":"53","correctAnswer":"63",
+            "knowledgePointCode":"add_sub_within_100","rootCauseCode":"carry_omission"
+        }),
+    )
+    .unwrap();
+}
+
+#[test]
+fn offline_templates_resume_submit_and_leave_unmatched_rechecks_pending() {
+    let (_dir, state) = setup();
+    let today = Local::now().date_naive();
+    let yesterday = today.pred_opt().unwrap();
+    {
+        let mut i = state.lock().unwrap();
+        let mistake = mock_draft(&i, &mock_paper(&i));
+        repo::confirm_recommended(&i, &mistake).unwrap();
+        let original = scheduled_question(&i, "昨天的乘法应用题");
+        let time = practice_time(yesterday, 12, 0);
+        let guided = practice::save_at(&i, &[original], false, time).unwrap();
+        submit_on(&i, &guided, "10", time);
+        exec(&i.db, "UPDATE practice_questions SET revision_hint_at=?1,revision_hint_local_date=?2 WHERE session_id=?3",
+            &[&db::stamp(time),&yesterday.to_string(),&text(&guided,"sessionId")]).unwrap();
+        assert_eq!(
+            mastery::stats_on(&i, today).unwrap()["crossDayRecheck"]["due"],
+            1
+        );
+
+        assert!(i.key().unwrap().is_empty());
+        i.settings.practice_question_count = 2;
+    }
+    let error = tauri::async_runtime::block_on(practice::start(&state)).unwrap_err();
+    assert!(error.contains("没有适合的离线题"));
+
+    confirm_column_mistake(&state.lock().unwrap());
+    let request = json!({"requestId":db::id()});
+    let session =
+        tauri::async_runtime::block_on(practice_metrics::start(&state, &request)).unwrap();
+    assert_eq!(session["questions"].as_array().unwrap().len(), 1);
+    assert!(session["questions"][0].get("correctAnswer").is_none());
+    assert!(session["questions"][0].get("template").is_none());
+    let resumed = tauri::async_runtime::block_on(practice::start_with_path(&state)).unwrap();
+    assert_eq!(resumed, (session.clone(), "resume"));
+    {
+        let i = state.lock().unwrap();
+        let assigned = one(
+            &i.db,
+            "SELECT * FROM practice_questions WHERE session_id=?1",
+            &[&text(&session, "sessionId")],
+        )
+        .unwrap()
+        .unwrap();
+        let verification = db::parsed(&assigned, "verify_json");
+        assert_eq!(verification["source"], "template");
+        assert_eq!(verification["template"]["version"], 1);
+        assert!(verification["template"]["seed"].is_u64());
+        assert!(verification["template"]["parameters"].is_object());
+        assert_ne!(verification["template"]["fingerprint"], "expression:27+36");
+        assert_eq!(assigned["knowledge_point_id"], "add_sub_within_100");
+        assert_eq!(assigned["root_cause_id"], "carry_omission");
+        assert_eq!(count(&i, "ai_runs"), 1); // Only the fixture's earlier AI session.
+        assert_eq!(
+            submit_on(&i, &session, text(&assigned, "correct_answer"), Utc::now())["correctCount"],
+            1
+        );
+        let stats = mastery::stats_on(&i, today).unwrap();
+        assert_eq!(stats["crossDayRecheck"]["due"], 1);
+        assert_eq!(stats["crossDayRecheck"]["completed"], 0);
+
+        let qid = &session["questions"][0]["id"];
+        question_review::report(&i, &json!({"questionId":qid,"reason":"explanation"})).unwrap();
+        question_review::resolve(
+            &i,
+            &json!({"questionId":qid,"action":"keep","note":"样例复核通过"}),
+        )
+        .unwrap();
+        practice_metrics::finish(
+            &i,
+            &json!({"requestId":request["requestId"],"elapsedMs":25}),
+        )
+        .unwrap();
+        let metrics = practice_metrics::summary(&i).unwrap();
+        assert_eq!(metrics["ready"]["p50Ms"], 25);
+        assert_eq!(metrics["reviewedQuality"]["template"]["invalidRate"], 0.0);
+        assert!(metrics["reviewedQuality"]["ai"]["invalidRate"].is_null());
+    }
+}
+
+#[test]
+fn prepared_ai_variants_are_assigned_only_in_the_next_matching_round() {
+    let (_dir, mut state) = setup();
+    {
+        let mut i = state.lock().unwrap();
+        confirm_column_mistake(&i);
+        let mistake = mock_draft(&i, &mock_paper(&i));
+        repo::confirm_recommended(&i, &mistake).unwrap();
+        i.settings.practice_question_count = 2;
+        exec(
+            &i.db,
+            "INSERT INTO app_settings VALUES ('bailian_api_key','mock-key')",
+            &[],
+        )
+        .unwrap();
+    }
+    let generated = json!({"questions":[
+        {"question_markdown":"超市有 12 盒饼干，每盒 15 块，一共有多少块？","answer_type":"number","correct_answer":"180","unit":"块","solution_markdown":"12×15=180"}
+    ]});
+    let (endpoint, server) = mock_ai(vec![
+        (200, reply(&generated.to_string())),
+        (200, reply("{\"answer\":\"180\"}")),
+    ]);
+    state.ai_endpoint = endpoint;
+    let (first, resumed, next) = tauri::async_runtime::block_on(async {
+        let first = practice::start_with_path(&state).await.unwrap();
+        let _prefetch_finished = state.practice_preparation.lock().await;
+        let resumed = practice::start_with_path(&state).await.unwrap();
+        {
+            let i = state.lock().unwrap();
+            assert_eq!(count(&i, "practice_sessions"), 1);
+            assert_eq!(count(&i, "practice_questions"), 1);
+            practice::abandon(&i, &json!({"sessionId":first.0["sessionId"]})).unwrap();
+        }
+        let next = practice::start_with_path(&state).await.unwrap();
+        (first, resumed, next)
+    });
+    assert_eq!(first.1, "ready");
+    assert_eq!(first.0["questions"].as_array().unwrap().len(), 1);
+    assert_eq!(resumed, (first.0.clone(), "resume"));
+    assert_eq!(next.1, "ready");
+    assert_ne!(first.0["sessionId"], next.0["sessionId"]);
+    assert_eq!(next.0["questions"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        next.0["questions"][1]["questionMarkdown"],
+        generated["questions"][0]["question_markdown"]
+    );
+    assert_eq!(server.join().unwrap().len(), 2);
+    let i = state.lock().unwrap();
+    let ai_question = &next.0["questions"][1]["id"];
+    question_review::report(&i, &json!({"questionId":ai_question,"reason":"grading"})).unwrap();
+    question_review::resolve(
+        &i,
+        &json!({"questionId":ai_question,"action":"void","note":"模拟确认坏题"}),
+    )
+    .unwrap();
+    assert_eq!(
+        practice_metrics::summary(&i).unwrap()["reviewedQuality"]["ai"]["invalidRate"],
+        1.0
+    );
+}
+
+#[test]
+fn v8_upgrade_adds_local_start_samples_without_rewriting_questions() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("zero-defect.sqlite");
+    let original = json!({"solver":"35","model":"legacy-model"}).to_string();
+    {
+        let db = rusqlite::Connection::open(&file).unwrap();
+        db::migrate(&db, None, 8).unwrap();
+        exec(&db, "INSERT INTO practice_sessions(id,practice_date,status,created_at) VALUES ('old-session','2026-11-20','pending','2026-11-20T00:00:00Z')", &[]).unwrap();
+        exec(&db, "INSERT INTO practice_questions(id,session_id,position,root_cause_id,knowledge_point_id,question_markdown,answer_type,correct_answer,difficulty,status,verify_json,created_at)
+            VALUES ('old-question','old-session',0,'carry_omission','add_sub_within_100','18+17=?','number','35',1,'assigned',?1,'2026-11-20T00:00:00Z')", &[&original]).unwrap();
+    }
+    let state = AppState::new(dir.path().to_owned(), vec![]).unwrap();
+    let resumed = tauri::async_runtime::block_on(practice::start(&state)).unwrap();
+    assert_eq!(resumed["sessionId"], "old-session");
+    let i = state.lock().unwrap();
+    assert_eq!(count(&i, "practice_start_samples"), 0);
+    assert_eq!(
+        one(&i.db, "SELECT verify_json FROM practice_questions", &[])
+            .unwrap()
+            .unwrap()["verify_json"],
+        original
+    );
+    assert!(std::fs::read_dir(dir.path().join("backups"))
+        .unwrap()
+        .flatten()
+        .any(|file| file.file_name().to_string_lossy().starts_with("db-v8-")));
+}
+
+#[test]
+fn start_metrics_include_failures_and_use_nearest_rank_percentiles() {
+    let (dir, state) = setup();
+    let request = json!({"requestId":db::id()});
+    assert!(tauri::async_runtime::block_on(practice_metrics::start(&state, &request)).is_err());
+    {
+        let i = state.lock().unwrap();
+        for elapsed in 1..=10 {
+            exec(
+                &i.db,
+                "INSERT INTO practice_start_samples VALUES (?1,?2,'online','ready',?3)",
+                &[&db::id(), &db::now(), &(elapsed * 100)],
+            )
+            .unwrap();
+        }
+        exec(
+            &i.db,
+            "INSERT INTO practice_start_samples VALUES (?1,?2,NULL,'pending',NULL)",
+            &[&db::id(), &db::now()],
+        )
+        .unwrap();
+        let values = practice_metrics::summary(&i).unwrap();
+        assert_eq!(values["online"]["p50Ms"], 500);
+        assert_eq!(values["online"]["p90Ms"], 900);
+        assert_eq!(values["overall"]["outcomes"]["failedCount"], 1);
+        assert_eq!(values["overall"]["outcomes"]["pendingCount"], 1);
+    }
+    drop(state);
+    let state = AppState::new(dir.path().to_owned(), vec![]).unwrap();
+    let i = state.lock().unwrap();
+    let values = practice_metrics::summary(&i).unwrap();
+    assert_eq!(values["overall"]["outcomes"]["interruptedCount"], 1);
+    assert_eq!(values["overall"]["outcomes"]["pendingCount"], 0);
+    assert_eq!(values["overall"]["outcomes"]["failureRate"], 1.0 / 12.0);
+}
+
+#[test]
+fn open_guided_recheck_waits_for_a_comparable_variant_even_with_same_topic_template() {
+    let (_dir, state) = setup();
+    let today = Local::now().date_naive();
+    let yesterday = today.pred_opt().unwrap();
+    {
+        let i = state.lock().unwrap();
+        confirm_column_mistake(&i);
+        let original = scheduled_question(
+            &i,
+            "书架上原有 8 本故事书，又放上 7 本，现在一共有多少本故事书？",
+        );
+        let time = practice_time(yesterday, 12, 0);
+        let session = practice::save_at(&i, &[original], false, time).unwrap();
+        submit_on(&i, &session, "10", time);
+        exec(
+            &i.db,
+            "UPDATE practice_questions SET revision_hint_at=?1,revision_hint_local_date=?2",
+            &[&db::stamp(time), &yesterday.to_string()],
+        )
+        .unwrap();
+    }
+    assert!(tauri::async_runtime::block_on(practice::start(&state))
+        .unwrap_err()
+        .contains("没有适合的离线题"));
+    let i = state.lock().unwrap();
+    assert_eq!(count(&i, "practice_questions"), 1);
+    assert_eq!(
+        mastery::stats_on(&i, today).unwrap()["crossDayRecheck"]["due"],
+        1
+    );
+}
+
+#[test]
+fn local_round_does_not_wait_for_stalled_online_generation() {
+    let (_dir, mut state) = setup();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    state.ai_endpoint = format!("http://{}", listener.local_addr().unwrap());
+    {
+        let mut i = state.lock().unwrap();
+        confirm_column_mistake(&i);
+        let mistake = mock_draft(&i, &mock_paper(&i));
+        repo::confirm_recommended(&i, &mistake).unwrap();
+        i.settings.practice_question_count = 2;
+        exec(
+            &i.db,
+            "INSERT INTO app_settings VALUES ('bailian_api_key','mock-key')",
+            &[],
+        )
+        .unwrap();
+    }
+    tauri::async_runtime::block_on(async {
+        let (session, path) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            practice::start_with_path(&state),
+        )
+        .await
+        .expect("本地短练不应等网络响应")
+        .unwrap();
+        assert_eq!(path, "ready");
+        assert_eq!(session["questions"].as_array().unwrap().len(), 1);
+        {
+            let i = state.lock().unwrap();
+            let q = one(&i.db, "SELECT correct_answer FROM practice_questions", &[])
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                submit_on(&i, &session, text(&q, "correct_answer"), Utc::now())["correctCount"],
+                1
+            );
+        }
+        drop(listener);
+        let _prefetch_finished = state.practice_preparation.lock().await;
+    });
+}
+
+fn guided_column_application(i: &state::Inner, time: DateTime<Utc>) {
+    confirm_column_mistake(i);
+    let original = scheduled_question(
+        i,
+        "书架上原有 8 本故事书，又放上 7 本，现在一共有多少本故事书？",
+    );
+    let session = practice::save_at(i, &[original], false, time).unwrap();
+    submit_on(i, &session, "10", time);
+    let id = text(&session["questions"][0], "id");
+    revision::request_hint(i, &json!({"questionId":id,"step":1})).unwrap();
+    exec(
+        &i.db,
+        "UPDATE practice_questions SET revision_hint_at=?1,revision_hint_local_date=?2 WHERE id=?3",
+        &[
+            &db::stamp(time),
+            &time.with_timezone(&Local).date_naive().to_string(),
+            &id,
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn resumed_template_cannot_complete_an_application_recheck_after_midnight() {
+    let (dir, state) = setup();
+    let day = practice_day(6);
+    let tomorrow = practice_day(7);
+    let session = {
+        let i = state.lock().unwrap();
+        guided_column_application(&i, practice_time(day, 20, 0));
+        let mut template = scheduled_question(&i, "用竖式计算：$58+27=?$");
+        let family = practice_templates::family("add_sub_within_100", "carry_omission").unwrap();
+        let sample =
+            practice_templates::generate(family, &state::PracticeDifficulty::Medium, 100, 20)
+                .unwrap();
+        template.markdown = sample.markdown;
+        template.correct = sample.correct;
+        template.template = Some(sample.metadata);
+        practice::save_at(&i, &[template], false, practice_time(day, 23, 59)).unwrap()
+    };
+    drop(state);
+    let state = AppState::new(dir.path().to_owned(), vec![]).unwrap();
+    let resumed = tauri::async_runtime::block_on(practice::start(&state)).unwrap();
+    assert_eq!(resumed, session);
+    let i = state.lock().unwrap();
+    let template = one(
+        &i.db,
+        "SELECT correct_answer FROM practice_questions WHERE session_id=?1",
+        &[&text(&session, "sessionId")],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        submit_on(
+            &i,
+            &resumed,
+            text(&template, "correct_answer"),
+            practice_time(tomorrow, 0, 1)
+        )["correctCount"],
+        1
+    );
+    assert_eq!(
+        mastery::stats_on(&i, tomorrow).unwrap()["crossDayRecheck"],
+        json!({"waiting":0,"due":1,"completed":0,"correct":0})
+    );
+
+    let application = record_variant(
+        &i,
+        "花店上午卖了 9 束花，下午卖了 6 束花，全天卖了多少束花？",
+        "15",
+        tomorrow,
+    );
+    assert_eq!(
+        mastery::stats_on(&i, tomorrow).unwrap()["crossDayRecheck"]["correct"],
+        1
+    );
+    let id = &application["questions"][0]["id"];
+    question_review::report(&i, &json!({"questionId":id,"reason":"prompt"})).unwrap();
+    question_review::resolve(
+        &i,
+        &json!({"questionId":id,"action":"void","note":"测试重新计算复测结果"}),
+    )
+    .unwrap();
+    assert_eq!(
+        mastery::stats_on(&i, tomorrow).unwrap()["crossDayRecheck"]["due"],
+        1
+    );
+}
+
+#[test]
+fn online_application_recheck_rejects_a_reworded_calculation() {
+    let (_dir, mut state) = setup();
+    let today = Local::now().date_naive();
+    {
+        let mut i = state.lock().unwrap();
+        guided_column_application(&i, practice_time(today.pred_opt().unwrap(), 20, 0));
+        i.settings.practice_question_count = 1;
+        exec(
+            &i.db,
+            "INSERT INTO app_settings VALUES ('bailian_api_key','mock-key')",
+            &[],
+        )
+        .unwrap();
+    }
+    let calculation = "计算：58+27，得数是多少？";
+    let application = "花店上午卖了 58 束花，下午卖了 27 束花，全天卖了多少束花？";
+    let first = json!({"questions":[{"question_markdown":calculation,"answer_type":"number","correct_answer":"85"}]});
+    let retry = json!({"answer":"85","questions":[
+        {"question_markdown":application,"answer_type":"number","correct_answer":"85","unit":"束"}
+    ]});
+    let (endpoint, server) = mock_ai(vec![
+        (200, reply(&first.to_string())),
+        (200, reply(&retry.to_string())),
+        (200, reply("{\"answer\":\"85\"}")),
+    ]);
+    state.ai_endpoint = endpoint;
+    let session = tauri::async_runtime::block_on(practice::start(&state)).unwrap();
+    assert_eq!(session["questions"][0]["questionMarkdown"], application);
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(!requests[2]["messages"].to_string().contains(calculation));
+}
+
+#[test]
+fn figure_recheck_matches_figure_type_when_assigning_and_replaying_answers() {
+    let (_dir, mut state) = setup();
+    let today = Local::now().date_naive();
+    let yesterday = today.pred_opt().unwrap();
+    let line =
+        json!({"type":"number_line","min":10,"max":20,"step":1,"marks":[{"value":15,"label":"A"}]});
+    {
+        let mut i = state.lock().unwrap();
+        confirm_column_mistake(&i);
+        i.settings.practice_question_count = 1;
+        exec(
+            &i.db,
+            "INSERT INTO app_settings VALUES ('bailian_api_key','mock-key')",
+            &[],
+        )
+        .unwrap();
+        let mut question = scheduled_question(&i, "条形统计图中，甲组和乙组一共有多少本书？");
+        question.figure = json!({"type":"bar_chart","unit":"本","bars":[{"label":"甲组","value":8},{"label":"乙组","value":7}]});
+        let time = practice_time(yesterday, 20, 0);
+        let original = practice::save_at(&i, &[question], false, time).unwrap();
+        submit_on(&i, &original, "10", time);
+        let id = text(&original["questions"][0], "id");
+        exec(
+            &i.db,
+            "UPDATE practice_questions
+             SET revision_hint_at=?1,revision_hint_local_date=?2,verify_json=json_remove(verify_json,'$.structure')
+             WHERE id=?3",
+            &[&db::stamp(time), &yesterday.to_string(), &id],
+        ).unwrap();
+        let mut mismatched = scheduled_question(&i, "数轴上点 A 代表多少？");
+        mismatched.figure = line.clone();
+        let time = practice_time(today, 0, 1);
+        let legacy = practice::save_at(&i, &[mismatched], false, time).unwrap();
+        exec(
+            &i.db,
+            "UPDATE practice_questions SET verify_json=json_remove(verify_json,'$.structure') WHERE session_id=?1",
+            &[&text(&legacy, "sessionId")],
+        ).unwrap();
+        submit_on(&i, &legacy, "15", time);
+        assert_eq!(
+            mastery::stats_on(&i, today).unwrap()["crossDayRecheck"]["due"],
+            1
+        );
+    }
+
+    let valid = "看条形统计图，三班和四班一共借了多少本书？";
+    let generated = json!({"questions":[
+        {"question_markdown":"看数轴，A 点表示的数是什么？","answer_type":"number","correct_answer":"15","figure":line},
+        {"question_markdown":valid,"answer_type":"number","correct_answer":"85","unit":"本","figure":
+            {"type":"bar_chart","unit":"本","bars":[{"label":"三班","value":58},{"label":"四班","value":27}]}}
+    ]});
+    let (endpoint, server) = mock_ai(vec![
+        (200, reply(&generated.to_string())),
+        (200, reply("{\"answer\":\"85\"}")),
+    ]);
+    state.ai_endpoint = endpoint;
+    let session = tauri::async_runtime::block_on(practice::start(&state)).unwrap();
+    assert_eq!(session["questions"][0]["questionMarkdown"], valid);
+    let requests = server.join().unwrap();
+    assert!(requests[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("figure.type 必须为 bar_chart"));
+    let i = state.lock().unwrap();
+    let result = submit_on(&i, &session, "85", Utc::now());
+    assert_eq!(result["correctCount"], 1);
+    assert_eq!(
+        mastery::stats_on(&i, today).unwrap()["crossDayRecheck"]["correct"],
+        1
+    );
 }
